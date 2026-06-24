@@ -14,7 +14,7 @@ from rich.table import Table
 from .canvas_client import CanvasClient
 from .config import load_settings
 from .exceptions import AssistantError
-from .models import Assignment, CanvasFile, Course, CourseBundle, Folder, Module
+from .models import Assignment, CanvasFile, Course, CourseBundle, DownloadRecord, Folder, Module
 from .sync import CourseSyncer
 from .video_stub import video_index_stub
 
@@ -24,6 +24,7 @@ app = typer.Typer(
     help="Local CLI framework for SJTU Canvas courses, files, assignments, and indexes.",
 )
 console = Console()
+FETCH_STATUSES = {"would_download", "would_download_renamed"}
 
 
 def _exit_with_error(exc: Exception) -> None:
@@ -52,7 +53,18 @@ def _print_json(value: object) -> None:
         payload = value.model_dump(mode="json")  # type: ignore[attr-defined]
     else:
         payload = value
-    console.print(json.dumps(payload, ensure_ascii=False, indent=2))
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ["B", "KiB", "MiB", "GiB"]:
+        if value < 1024 or unit == "GiB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
 
 
 def _teacher_names(course: Course) -> str:
@@ -179,6 +191,41 @@ def _render_assignments(assignments: list[Assignment]) -> None:
             "" if assignment.published is None else ("yes" if assignment.published else "no"),
         )
     console.print(table)
+
+
+def _render_download_plan(records: list[DownloadRecord], *, limit: int) -> None:
+    total_size = sum(record.size for record in records if record.status in FETCH_STATUSES)
+    existing_size = sum(record.size for record in records if record.status == "present")
+    counts = Counter(record.status for record in records)
+    console.print(
+        "  ".join(
+            [
+                f"files: {len(records)}",
+                f"to fetch: {_format_bytes(total_size)}",
+                f"already present: {_format_bytes(existing_size)}",
+                "statuses: "
+                + ", ".join(f"{status}={count}" for status, count in sorted(counts.items())),
+            ]
+        )
+    )
+
+    table = Table(title="Download Plan")
+    table.add_column("Status")
+    table.add_column("Size", justify="right")
+    table.add_column("Canvas Path")
+    table.add_column("Local Path")
+    table.add_column("Message")
+    for record in records[:limit]:
+        table.add_row(
+            record.status,
+            _format_bytes(record.size),
+            record.canvas_path,
+            record.relative_download_path or str(record.download_path or ""),
+            record.message,
+        )
+    console.print(table)
+    if len(records) > limit:
+        console.print(f"... {len(records) - limit} more files hidden. Use --limit {len(records)} to show all.")
 
 
 @app.command("whoami")
@@ -386,6 +433,48 @@ def download(
         )
         console.print(f"JSON index: {json_path}")
         console.print(f"Markdown index: {md_path}")
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@app.command("plan")
+def plan(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Planned download/index output directory."),
+    limit: int = typer.Option(50, "--limit", min=1, help="Maximum planned files to show in the table."),
+    json_output: bool = typer.Option(False, "--json", help="Print raw JSON."),
+) -> None:
+    """Preview course download size, statuses, and local paths without downloading."""
+
+    try:
+        client, root = _make_client(token, base_url, data_dir)
+        with client:
+            syncer = CourseSyncer(client, root)
+            bundle = syncer.fetch_course_bundle(course_id)
+            records = syncer.plan_download_records(bundle, output_dir=output_dir)
+        if json_output:
+            _print_json(
+                {
+                    "course": bundle.course.model_dump(mode="json"),
+                    "summary": {
+                        "files": len(records),
+                        "bytes_to_fetch": sum(
+                            record.size
+                            for record in records
+                            if record.status in FETCH_STATUSES
+                        ),
+                        "bytes_present": sum(record.size for record in records if record.status == "present"),
+                        "statuses": dict(Counter(record.status for record in records)),
+                    },
+                    "downloads": [record.model_dump(mode="json") for record in records],
+                }
+            )
+            return
+        console.print(f"[bold]Download plan for {bundle.course.display_name}[/bold]")
+        _render_download_plan(records, limit=limit)
     except AssistantError as exc:
         _exit_with_error(exc)
 

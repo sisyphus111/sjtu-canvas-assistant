@@ -120,6 +120,13 @@ sjtu-canvas modules 12345
 sjtu-canvas assignments 12345
 ```
 
+下载前预检文件数量、总大小和本地路径：
+
+```bash
+sjtu-canvas plan 12345
+sjtu-canvas plan 12345 --output data --json
+```
+
 按课程下载文件并生成索引：
 
 ```bash

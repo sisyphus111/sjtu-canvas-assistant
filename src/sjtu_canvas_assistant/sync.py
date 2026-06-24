@@ -80,6 +80,47 @@ class CourseSyncer:
             for file in bundle.files
         ]
 
+    def plan_download_records(
+        self,
+        bundle: CourseBundle,
+        *,
+        output_dir: Optional[Path] = None,
+    ) -> List[DownloadRecord]:
+        folder_map = self._folder_map(bundle.folders)
+        root_dir = output_dir or self.data_dir
+        used_targets: List[Path] = []
+        records: List[DownloadRecord] = []
+
+        for file in bundle.files:
+            target = planned_file_path(root_dir, bundle.course, file, folder_map)
+            status = "would_download"
+            message = ""
+
+            if target in used_targets:
+                target = unique_path_for_conflict(target, used_targets, file.id)
+                status = "would_download_renamed"
+                message = "duplicate Canvas path"
+            used_targets.append(target)
+
+            if file.locked:
+                status = "locked"
+                message = "file is locked in Canvas"
+            elif not file.url:
+                status = "unavailable"
+                message = "missing download URL"
+            elif target.exists() and (not file.size or target.stat().st_size == file.size):
+                status = "present"
+                message = "already exists"
+            elif target.exists():
+                target = unique_path_for_conflict(target, used_targets, file.id)
+                used_targets.append(target)
+                status = "would_download_renamed"
+                message = "local file with different size exists"
+
+            records.append(self._download_record(bundle, file, target, status, message))
+
+        return records
+
     def build_index_without_download(
         self,
         course_id: int,
@@ -87,10 +128,7 @@ class CourseSyncer:
         output_dir: Optional[Path] = None,
     ) -> Tuple[CourseIndex, Path, Path]:
         bundle = self.fetch_course_bundle(course_id)
-        records: List[DownloadRecord] = []
-        for file, target in self.planned_downloads(bundle, output_dir):
-            status = "present" if target.exists() else "not_downloaded"
-            records.append(self._download_record(bundle, file, target, status))
+        records = self.plan_download_records(bundle, output_dir=output_dir)
         index = self._make_index(bundle, records)
         return write_index(index, output_dir or self.data_dir)
 
