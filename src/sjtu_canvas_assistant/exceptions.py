@@ -37,5 +37,17 @@ class DownloadError(AssistantError):
     """A file download failed."""
 
 
-class VideoIntegrationNotImplemented(AssistantError):
-    """The SJTU video integration is intentionally a stub in v1."""
+class VideoIntegrationError(AssistantError):
+    """SJTU video integration failed with a token-safe message."""
+
+
+class VideoAuthError(VideoIntegrationError):
+    """SJTU video integration could not authenticate or refresh video token."""
+
+
+class VideoNetworkError(VideoIntegrationError):
+    """Network or timeout failure while talking to the SJTU video service."""
+
+
+class VideoIntegrationNotImplemented(VideoIntegrationError):
+    """A video feature is intentionally not implemented yet."""

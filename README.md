@@ -8,7 +8,7 @@
 https://oc.sjtu.edu.cn
 ```
 
-第一版只使用 Canvas API，不模拟 jAccount 登录，不保存密码，不自动提交作业。
+第一版不模拟 jAccount 登录，不保存密码，不自动提交作业。课程、文件、作业等基础数据走 Canvas API；视频模块通过 Canvas Access Token 发起 sessionless LTI，再只读调用 SJTU 视频 API。
 
 ## 参考与取舍
 
@@ -17,8 +17,8 @@ https://oc.sjtu.edu.cn
 - Canvas 基础数据走 `/api/v1/...` 和 Bearer token。
 - 课程列表包含 `teachers` 和 `term`。
 - 文件、文件夹、模块、作业分别通过 Canvas API 拉取，并处理分页。
-- SJTU 视频/字幕/PPT 回放不是 Canvas token 单独能完成的能力，需要 Canvas 外部工具 LTI 页面和 SJTU 视频站 token/cookie 流程，所以第一版只保留接口占位。
-- MCP Server 后续应直接复用本项目的 `CanvasClient`、`CourseSyncer` 和索引模型，而不是重新写一套 Canvas 访问逻辑。
+- SJTU 视频/字幕/PPT 回放通过 Canvas 外部工具 8329 接入。当前实现优先使用 Canvas `sessionless_launch` API 发起 LTI，不需要模拟 jAccount 表单登录。
+- MCP Server 直接复用本项目的 `CanvasClient`、`CourseSyncer`、`SJTUVideoClient` 和索引模型，而不是重新写一套访问逻辑。
 
 本项目不会照搬 Tauri 桌面 App，只提供可扩展的本地 CLI 和 Python 模块。
 
@@ -74,6 +74,10 @@ cp .env.example .env
 CANVAS_TOKEN=你的 Canvas Access Token
 CANVAS_BASE_URL=https://oc.sjtu.edu.cn
 CANVAS_DATA_DIR=data
+
+# 可选调试项；通常留空，由 video 命令自动通过 Canvas LTI 换取。
+SJTU_VIDEO_TOKEN=
+SJTU_VIDEO_COURSE_ID=
 ```
 
 `.env` 已被 `.gitignore` 忽略。
@@ -145,10 +149,37 @@ sjtu-canvas download 12345 --output data
 sjtu-canvas index 12345
 ```
 
-查看视频/字幕模块后续接入计划：
+查看视频/字幕模块状态：
 
 ```bash
 sjtu-canvas video-status 12345
+sjtu-canvas video status
+```
+
+列出某门课的视频：
+
+```bash
+sjtu-canvas video list 12345
+sjtu-canvas video list 12345 --json
+```
+
+读取某个视频的播放元数据：
+
+```bash
+sjtu-canvas video info 12345 VIDEO_ID
+```
+
+导出字幕为 SRT：
+
+```bash
+sjtu-canvas video subtitle 12345 VIDEO_ID
+sjtu-canvas video subtitle 12345 VIDEO_ID --output data/subtitles/example.srt
+```
+
+读取 PPT 回放切片元数据：
+
+```bash
+sjtu-canvas video ppt 12345 VIDEO_ID
 ```
 
 ## 下载与索引行为
@@ -182,8 +213,8 @@ data/课程名 [课程ID]/course_index.md
 - 文件、文件夹、模块、作业
 - 本地下载路径和状态
 - 文件更新时间
-- 视频/字幕/PPT 回放的后续接入说明
-- 未来 MCP Server 的候选工具接口
+- 视频/字幕/PPT 回放的只读接入状态
+- MCP Server 工具接口状态
 
 ## 错误处理
 
@@ -200,27 +231,51 @@ data/课程名 [课程ID]/course_index.md
 
 错误信息不会打印 token。
 
-## 视频、字幕、PPT 回放后续接入
+## 视频、字幕、PPT 回放
 
-根据参考项目实现，SJTU 课程视频大致流程是：
+当前已经接入只读视频能力。认证流程是：
 
-1. 通过 Canvas 网页会话访问 `/courses/{course_id}/external_tools/8329`。
-2. 解析 LTI/OIDC 表单并提交到 `v.sjtu.edu.cn`。
-3. 从跳转 URL 中取得 `tokenId`。
-4. 调用 `getAccessTokenByTokenId` 换取 SJTU 视频 API token 和 `canvasCourseId`。
-5. 调用 `findVodVideoList` 列出视频。
-6. 调用 `getVodVideoInfos` 获取播放地址。
-7. 调用 `transfer/translate/detail` 获取字幕。
-8. 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片，再合成为 PDF。
+1. 使用 Canvas Access Token 调用 `/api/v1/courses/{course_id}/external_tools/sessionless_launch?id=8329&launch_type=course_navigation`。
+2. 打开 Canvas 返回的一次性 LTI launch URL。
+3. 解析 LTI/OIDC 表单并提交到 `v.sjtu.edu.cn`。
+4. 从跳转 URL 中取得 `tokenId`。
+5. 调用 `getAccessTokenByTokenId` 换取 SJTU 视频 API token 和视频系统 `courId`。
+6. 后续视频 API 请求使用临时视频 token。
 
-这条链路需要已登录的 Canvas/JAccount Web session 或等价 cookie。第一版不做网页登录自动化，也不读取密码，所以只在 `video_stub.py` 中保留接口和端点常量。
+支持的只读功能：
 
-## MCP 后续接入
+- `video list`: 调用 `findVodVideoList` 列出课程视频。
+- `video info`: 调用 `getVodVideoInfos` 获取播放元数据。默认表格不会打印播放 URL；JSON/MCP 输出会递归脱敏 token/cookie/session 字段，并默认隐藏播放/下载 URL。
+- `video subtitle`: 调用 `transfer/translate/detail` 获取字幕并生成 SRT。
+- `video ppt`: 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片元数据。
+
+字幕来源是 SJTU 视频系统返回的数据。本工具不做本地语音识别，也不调用大模型生成字幕，只把接口返回的字幕行转换成 `.srt`。当前接口没有暴露字幕作者或生成器字段，因此不能可靠区分是平台自动转写、教师上传，还是后续修订版本。
+
+暂不实现：
+
+- 视频二进制下载。
+- PPT 图片下载与 PDF 合成。
+- 任何作业提交或自动交互。
+
+根据参考项目实现，底层端点是：
+
+1. Canvas sessionless launch：`/api/v1/courses/{course_id}/external_tools/sessionless_launch`
+2. LTI 初始化：`https://v.sjtu.edu.cn/jy-application-canvas-sjtu/oidc/login_initiations`
+3. token 交换：`https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/getAccessTokenByTokenId`
+4. 调用 `findVodVideoList` 列出视频。
+5. 调用 `getVodVideoInfos` 获取播放地址。
+6. 调用 `transfer/translate/detail` 获取字幕。
+7. 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片元数据。
+
+这条链路不读取 jAccount 密码。命令执行期间会使用 Canvas 返回的一次性 launch URL 和临时视频 token，错误信息会去掉 query/token，避免泄露凭据。
+
+## MCP 接入
 
 项目已经把能力拆成可复用模块：
 
 - `CanvasClient`: Canvas API、分页、错误处理、下载流
 - `CourseSyncer`: 课程元数据拉取、下载规划、本地同步
+- `SJTUVideoClient`: 视频 LTI 认证、视频列表、详情、字幕、PPT 切片元数据
 - `indexer`: JSON/Markdown 索引
 - `models`: 稳定数据模型
 
@@ -265,8 +320,13 @@ sjtu-canvas mcp
 - `generate_course_index`
 - `download_course_files`
 - `video_status`
+- `resolve_video_auth`
+- `list_course_videos`
+- `get_video_info`
+- `get_video_subtitle`
+- `get_video_ppt_slices`
 
-作业相关能力只读，不开放提交。
+作业和视频相关能力只读，不开放提交或自动发布。
 
 ## 开发验证
 
@@ -274,6 +334,7 @@ sjtu-canvas mcp
 python -m pytest
 sjtu-canvas --help
 sjtu-canvas video-status
+sjtu-canvas video --help
 printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n' | sjtu-canvas-mcp
 ```
 

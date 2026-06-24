@@ -11,7 +11,7 @@ from .exceptions import AssistantError, DownloadError
 from .indexer import write_index
 from .models import CanvasFile, CourseBundle, CourseIndex, DownloadRecord, Folder
 from .path_utils import canvas_file_path, planned_file_path, unique_path_for_conflict
-from .video_stub import video_index_stub
+from .video_client import video_index_status
 
 
 def utc_now_iso() -> str:
@@ -182,10 +182,10 @@ class CourseSyncer:
             modules=bundle.modules,
             assignments=bundle.assignments,
             downloads=records,
-            video=video_index_stub(),
+            video=video_index_status(),
             mcp={
-                "status": "planned",
-                "note": "The CLI services are intentionally split into reusable modules so a future MCP server can expose the same methods.",
+                "status": "implemented",
+                "note": "The local MCP stdio server exposes the same read/download/index methods as the CLI.",
                 "candidate_tools": [
                     "get_current_user",
                     "list_courses",
@@ -195,6 +195,10 @@ class CourseSyncer:
                     "list_course_assignments",
                     "download_course_files",
                     "generate_course_index",
+                    "list_course_videos",
+                    "get_video_info",
+                    "get_video_subtitle",
+                    "get_video_ppt_slices",
                 ],
             },
         )

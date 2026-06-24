@@ -59,6 +59,35 @@ def _render_modules(modules: List[Module]) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+def _render_status_block(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "No status recorded."
+    lines = []
+    status = value.get("status")
+    if status:
+        lines.append(f"Status: `{_md_escape(status)}`")
+    note = value.get("note")
+    if note:
+        lines.append(_md_escape(note))
+    auth = value.get("auth")
+    if auth:
+        lines.append(f"Auth: {_md_escape(auth)}")
+    subtitle_source = value.get("subtitle_source")
+    if subtitle_source:
+        lines.append(f"Subtitle source: {_md_escape(subtitle_source)}")
+    for key, title in [
+        ("read_only_features", "Read-only features"),
+        ("not_implemented", "Not implemented"),
+        ("candidate_tools", "Tools"),
+    ]:
+        items = value.get(key)
+        if isinstance(items, list) and items:
+            lines.append("")
+            lines.append(f"### {title}")
+            lines.extend(f"- {_md_escape(item)}" for item in items)
+    return "\n".join(lines) if lines else "No status recorded."
+
+
 def render_markdown_index(index: CourseIndex) -> str:
     course = index.course
     teachers = ", ".join(t.display_name for t in course.teachers if t.display_name)
@@ -127,7 +156,7 @@ def render_markdown_index(index: CourseIndex) -> str:
         ],
     )
 
-    video_note = index.video.get("note", "")
+    video_note = _render_status_block(index.video)
     mcp_note = index.mcp.get("note", "")
 
     return "\n".join(

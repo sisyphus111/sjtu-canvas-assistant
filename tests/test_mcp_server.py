@@ -1,4 +1,9 @@
-from sjtu_canvas_assistant.mcp_server import MCPStdioServer, ToolDefinition, _schema
+from sjtu_canvas_assistant.mcp_server import (
+    MCPStdioServer,
+    ToolDefinition,
+    _course_video_schema,
+    _schema,
+)
 
 
 def _server() -> MCPStdioServer:
@@ -36,6 +41,12 @@ def test_tools_list_returns_input_schema() -> None:
     tools = response["result"]["tools"]
     assert tools[0]["name"] == "echo"
     assert tools[0]["inputSchema"]["required"] == ["text"]
+
+
+def test_course_video_schema_requires_video_id() -> None:
+    schema = _course_video_schema()
+
+    assert schema["required"] == ["course_id", "video_id"]
 
 
 def test_tools_call_returns_text_and_structured_content() -> None:

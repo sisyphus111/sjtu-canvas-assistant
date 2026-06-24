@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 authors = [{ name = "SJTU Canvas Assistant" }]
 license = { text = "MIT" }
 dependencies = [
+  "beautifulsoup4>=4.12,<5.0",
   "httpx[socks]>=0.27,<1.0",
   "pydantic>=2.7,<3.0",
   "python-dotenv>=1.0,<2.0",

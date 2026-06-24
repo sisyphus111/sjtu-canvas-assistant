@@ -14,10 +14,28 @@ from rich.table import Table
 from .canvas_client import CanvasClient
 from .config import load_settings
 from .exceptions import AssistantError
-from .models import Assignment, CanvasFile, Course, CourseBundle, DownloadRecord, Folder, Module
+from .models import (
+    Assignment,
+    CanvasFile,
+    CanvasVideo,
+    Course,
+    CourseBundle,
+    DownloadRecord,
+    Folder,
+    Module,
+    VideoInfo,
+    VideoPPTSlice,
+    VideoSubtitleBody,
+)
 from .mcp_server import main as run_mcp_server
+from .path_utils import safe_path_segment
 from .sync import CourseSyncer
-from .video_stub import video_index_stub
+from .video_client import (
+    SJTUVideoClient,
+    redact_video_payload,
+    subtitle_items_to_srt,
+    video_index_status,
+)
 
 app = typer.Typer(
     name="sjtu-canvas",
@@ -26,6 +44,11 @@ app = typer.Typer(
 )
 console = Console()
 FETCH_STATUSES = {"would_download", "would_download_renamed"}
+video_app = typer.Typer(
+    no_args_is_help=True,
+    help="Read SJTU course videos, subtitles, and PPT replay metadata.",
+)
+app.add_typer(video_app, name="video")
 
 
 def _exit_with_error(exc: Exception) -> None:
@@ -49,12 +72,34 @@ def _make_client(
     )
 
 
+def _make_video_client(
+    token: Optional[str],
+    base_url: Optional[str],
+    data_dir: Optional[Path],
+) -> tuple[SJTUVideoClient, Path]:
+    settings = load_settings(token=token, base_url=base_url, data_dir=data_dir)
+    return (
+        SJTUVideoClient(
+            settings.base_url,
+            settings.token,
+            timeout_seconds=settings.timeout_seconds,
+            video_token=settings.video_token,
+            video_course_id=settings.video_course_id,
+        ),
+        settings.data_dir,
+    )
+
+
 def _print_json(value: object) -> None:
     if hasattr(value, "model_dump"):
         payload = value.model_dump(mode="json")  # type: ignore[attr-defined]
     else:
         payload = value
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _print_video_json(value: object) -> None:
+    typer.echo(json.dumps(redact_video_payload(value), ensure_ascii=False, indent=2))
 
 
 def _format_bytes(size: int) -> str:
@@ -190,6 +235,101 @@ def _render_assignments(assignments: list[Assignment]) -> None:
             "" if assignment.points_possible is None else str(assignment.points_possible),
             ", ".join(assignment.submission_types),
             "" if assignment.published is None else ("yes" if assignment.published else "no"),
+        )
+    console.print(table)
+
+
+def _render_videos(videos: list[CanvasVideo]) -> None:
+    table = Table(title="Course Videos")
+    table.add_column("Video ID")
+    table.add_column("Name")
+    table.add_column("Teacher")
+    table.add_column("Classroom")
+    table.add_column("Begin")
+    table.add_column("End")
+    for video in videos:
+        table.add_row(
+            video.video_id,
+            video.display_name,
+            video.user_name,
+            video.classroom_name,
+            video.course_begin_time,
+            video.course_end_time,
+        )
+    console.print(table)
+
+
+def _render_video_info(info: VideoInfo) -> None:
+    table = Table(title="Video Info")
+    table.add_column("Field")
+    table.add_column("Value")
+    for key, value in [
+        ("id", info.id),
+        ("video_id", info.video_id),
+        ("name", info.video_name),
+        ("teacher", info.user_name),
+        ("classroom", info.classroom_name),
+        ("begin", info.course_begin_time),
+        ("end", info.course_end_time),
+        ("video_course_id", info.cour_id),
+        ("play_entries", len(info.play_items)),
+    ]:
+        table.add_row(key, str(value or ""))
+    console.print(table)
+
+
+def _render_subtitle_summary(body: VideoSubtitleBody, srt: str, output: Optional[Path]) -> None:
+    console.print(
+        f"Subtitle rows: before={len(body.before_assembly_list)}  "
+        f"after={len(body.after_assembly_list)}  srt_chars={len(srt)}"
+    )
+    if output is not None:
+        console.print(f"SRT output: {output}")
+
+
+def _short_text(value: object, *, limit: int = 120) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(redact_video_payload(value), ensure_ascii=False)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _ocr_summary(value: object, *, limit: int = 120) -> str:
+    if isinstance(value, list):
+        words = []
+        for item in value:
+            if isinstance(item, dict) and item.get("word"):
+                words.append(str(item["word"]))
+            elif isinstance(item, str):
+                words.append(item)
+        if words:
+            return _short_text(" ".join(words), limit=limit)
+    if isinstance(value, dict) and value.get("word"):
+        return _short_text(value["word"], limit=limit)
+    return _short_text(value, limit=limit)
+
+
+def _format_video_offset(milliseconds: int) -> str:
+    total_seconds = max(0, int(milliseconds)) // 1000
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def _render_ppt_slices(slices: list[VideoPPTSlice]) -> None:
+    table = Table(title="Video PPT Slices")
+    table.add_column("Offset", justify="right")
+    table.add_column("OCR")
+    table.add_column("Image")
+    for item in slices:
+        table.add_row(
+            _format_video_offset(item.create_sec),
+            _ocr_summary(item.ocr),
+            "yes" if item.ppt_img_url else "",
         )
     console.print(table)
 
@@ -504,18 +644,163 @@ def index(
         _exit_with_error(exc)
 
 
+@video_app.command("status")
+def video_status_command() -> None:
+    """Show the implemented SJTU video/subtitle integration surface."""
+
+    console.print_json(json.dumps(video_index_status(), ensure_ascii=False))
+
+
+@video_app.command("auth")
+def video_auth(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Resolve SJTU video auth for one course without printing secret values."""
+
+    try:
+        client, _ = _make_video_client(token, base_url, data_dir)
+        with client:
+            auth = client.resolve_course_video_auth(course_id, force=True)
+        payload = auth.redacted()
+        if json_output:
+            _print_video_json(payload)
+            return
+        table = Table(title="SJTU Video Auth")
+        table.add_column("Field")
+        table.add_column("Value")
+        for key, value in payload.items():
+            table.add_row(key, str(value))
+        console.print(table)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@video_app.command("list")
+def video_list(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """List videos exposed by SJTU's Canvas video integration."""
+
+    try:
+        client, _ = _make_video_client(token, base_url, data_dir)
+        with client:
+            videos = client.list_course_videos(course_id)
+        if json_output:
+            _print_video_json([video.model_dump(mode="json") for video in videos])
+        else:
+            _render_videos(videos)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@video_app.command("info")
+def video_info(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    video_id: str = typer.Argument(..., help="SJTU video ID from `video list`."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Read playback metadata for one video. This does not download video bytes."""
+
+    try:
+        client, _ = _make_video_client(token, base_url, data_dir)
+        with client:
+            info = client.get_video_info(course_id, video_id)
+        if json_output:
+            _print_video_json(info)
+        else:
+            _render_video_info(info)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@video_app.command("subtitle")
+def video_subtitle(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    video_id: str = typer.Argument(..., help="SJTU video ID from `video list`."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="SRT output path."),
+    print_srt: bool = typer.Option(False, "--print", help="Print SRT text to stdout."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted subtitle JSON instead of SRT summary."),
+) -> None:
+    """Read subtitles for one video and optionally write an SRT file."""
+
+    try:
+        client, root = _make_video_client(token, base_url, data_dir)
+        with client:
+            body = client.get_video_subtitle(course_id, video_id)
+        srt = subtitle_items_to_srt(body.preferred_items)
+        if output is None:
+            output = (
+                root
+                / "videos"
+                / f"course-{course_id}"
+                / f"{safe_path_segment(video_id, fallback='video')}.srt"
+            )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(srt, encoding="utf-8")
+        if json_output:
+            _print_video_json(
+                {
+                    "subtitle": body.model_dump(mode="json"),
+                    "srt_path": str(output),
+                    "srt_chars": len(srt),
+                }
+            )
+            return
+        if print_srt:
+            typer.echo(srt)
+        _render_subtitle_summary(body, srt, output)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@video_app.command("ppt")
+def video_ppt(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    video_id: str = typer.Argument(..., help="SJTU video ID from `video list`."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Read PPT replay slice metadata for one video. Images/PDF assembly are not downloaded yet."""
+
+    try:
+        client, _ = _make_video_client(token, base_url, data_dir)
+        with client:
+            slices = client.get_video_ppt_slices(course_id, video_id)
+        if json_output:
+            _print_video_json([item.model_dump(mode="json") for item in slices])
+        else:
+            _render_ppt_slices(slices)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
 @app.command("video-status")
 def video_status(
     course_id: Optional[int] = typer.Argument(None, help="Optional Canvas course ID."),
 ) -> None:
-    """Show the planned SJTU video/subtitle integration surface."""
+    """Show the SJTU video/subtitle integration surface."""
 
-    info = video_index_stub()
+    info = video_index_status()
     console.print(f"[bold]Video status:[/bold] {info['status']}")
-    console.print(info["note"])
     if course_id is not None:
         console.print(
-            f"Planned LTI entry: /courses/{course_id}/external_tools/8329"
+            f"Canvas sessionless LTI entry: /api/v1/courses/{course_id}/external_tools/sessionless_launch"
         )
     console.print_json(json.dumps(info, ensure_ascii=False))
 

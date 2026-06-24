@@ -19,7 +19,12 @@ from .canvas_client import CanvasClient
 from .config import load_settings
 from .exceptions import AssistantError
 from .sync import CourseSyncer
-from .video_stub import video_index_stub
+from .video_client import (
+    SJTUVideoClient,
+    redact_video_payload,
+    subtitle_items_to_srt,
+    video_index_status,
+)
 
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, "2025-03-26"}
@@ -67,6 +72,19 @@ def _course_id_schema(extra: Optional[Mapping[str, Mapping[str, Any]]] = None) -
     if extra:
         properties.update(extra)
     return _schema(properties, required=["course_id"])
+
+
+def _course_video_schema() -> Dict[str, Any]:
+    return _schema(
+        {
+            "course_id": {"type": "integer", "description": "Canvas course ID"},
+            "video_id": {
+                "type": "string",
+                "description": "SJTU video ID from list_course_videos",
+            },
+        },
+        required=["course_id", "video_id"],
+    )
 
 
 def _result(payload: Any) -> Dict[str, Any]:
@@ -117,6 +135,15 @@ class CanvasMCPToolbox:
     def _syncer(self, client: CanvasClient) -> CourseSyncer:
         return CourseSyncer(client, self.settings.data_dir)
 
+    def _video_client(self) -> SJTUVideoClient:
+        return SJTUVideoClient(
+            self.settings.base_url,
+            self.settings.token,
+            timeout_seconds=self.settings.timeout_seconds,
+            video_token=self.settings.video_token,
+            video_course_id=self.settings.video_course_id,
+        )
+
     @staticmethod
     def _output_dir(arguments: Mapping[str, Any]) -> Optional[Path]:
         raw = arguments.get("output_dir")
@@ -132,6 +159,13 @@ class CanvasMCPToolbox:
         if not isinstance(course_id, int):
             raise ValueError("course_id must be an integer")
         return course_id
+
+    @staticmethod
+    def _video_id(arguments: Mapping[str, Any]) -> str:
+        video_id = arguments.get("video_id")
+        if not isinstance(video_id, str) or not video_id.strip():
+            raise ValueError("video_id must be a non-empty string")
+        return video_id.strip()
 
     def get_current_user(self, _: Mapping[str, Any]) -> Dict[str, Any]:
         with self._client() as client:
@@ -240,7 +274,46 @@ class CanvasMCPToolbox:
         }
 
     def video_status(self, _: Mapping[str, Any]) -> Dict[str, Any]:
-        return video_index_stub()
+        return video_index_status()
+
+    def resolve_video_auth(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        with self._video_client() as client:
+            return client.resolve_course_video_auth(course_id, force=True).redacted()
+
+    def list_course_videos(self, arguments: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        course_id = self._course_id(arguments)
+        with self._video_client() as client:
+            videos = client.list_course_videos(course_id)
+        return redact_video_payload(videos)
+
+    def get_video_info(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        video_id = self._video_id(arguments)
+        with self._video_client() as client:
+            info = client.get_video_info(course_id, video_id)
+        return redact_video_payload(info)
+
+    def get_video_subtitle(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        video_id = self._video_id(arguments)
+        with self._video_client() as client:
+            body = client.get_video_subtitle(course_id, video_id)
+        srt = subtitle_items_to_srt(body.preferred_items)
+        return redact_video_payload(
+            {
+                "subtitle": body.model_dump(mode="json"),
+                "srt": srt,
+                "srt_chars": len(srt),
+            }
+        )
+
+    def get_video_ppt_slices(self, arguments: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        course_id = self._course_id(arguments)
+        video_id = self._video_id(arguments)
+        with self._video_client() as client:
+            slices = client.get_video_ppt_slices(course_id, video_id)
+        return redact_video_payload(slices)
 
 
 def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
@@ -356,9 +429,44 @@ def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
         ToolDefinition(
             "video_status",
             "Video Integration Status",
-            "Return the planned SJTU video/subtitle/PPT integration flow.",
+            "Return the implemented SJTU video/subtitle/PPT integration flow.",
             _schema({}),
             toolbox.video_status,
+        ),
+        ToolDefinition(
+            "resolve_video_auth",
+            "Resolve Video Auth",
+            "Resolve SJTU video auth for one Canvas course and return only redacted auth metadata.",
+            _course_id_schema(),
+            toolbox.resolve_video_auth,
+        ),
+        ToolDefinition(
+            "list_course_videos",
+            "List Course Videos",
+            "List SJTU classroom videos for one Canvas course.",
+            _course_id_schema(),
+            toolbox.list_course_videos,
+        ),
+        ToolDefinition(
+            "get_video_info",
+            "Get Video Info",
+            "Read playback metadata for one SJTU video. Returned payload is token-redacted.",
+            _course_video_schema(),
+            toolbox.get_video_info,
+        ),
+        ToolDefinition(
+            "get_video_subtitle",
+            "Get Video Subtitle",
+            "Read subtitle rows for one SJTU video and return generated SRT text.",
+            _course_video_schema(),
+            toolbox.get_video_subtitle,
+        ),
+        ToolDefinition(
+            "get_video_ppt_slices",
+            "Get Video PPT Slices",
+            "Read PPT replay slice metadata for one SJTU video. This does not download images.",
+            _course_video_schema(),
+            toolbox.get_video_ppt_slices,
         ),
     ]
     return {tool.name: tool for tool in tools}
@@ -397,7 +505,8 @@ class MCPStdioServer:
             "serverInfo": {"name": "sjtu-canvas-assistant", "version": __version__},
             "instructions": (
                 "Use these tools to read SJTU Canvas courses, generate local indexes, "
-                "and download course files. Assignment tools are read-only; no tool submits work."
+                "download course files, and read SJTU video metadata/subtitles. "
+                "Assignment and video tools are read-only; no tool submits work."
             ),
         }
 

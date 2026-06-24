@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CanvasModel(BaseModel):
@@ -161,6 +161,120 @@ class Assignment(CanvasModel):
     submissions_download_url: str = ""
     all_dates: List[AssignmentDate] = Field(default_factory=list)
     grading_type: str = ""
+
+
+class VideoAuth(CanvasModel):
+    """Resolved SJTU video service auth for one Canvas course.
+
+    The token is intentionally not included in normal CLI/MCP outputs.
+    """
+
+    video_token: str = ""
+    video_course_id: str = ""
+    source: str = ""
+
+    def redacted(self) -> Dict[str, Any]:
+        return {
+            "video_token": "<redacted>" if self.video_token else "",
+            "video_course_id": self.video_course_id,
+            "source": self.source,
+        }
+
+
+class CanvasVideo(CanvasModel):
+    video_id: str = Field(default="", alias="videoId")
+    video_name: str = Field(default="", alias="videoName")
+    user_name: str = Field(default="", alias="userName")
+    classroom_name: str = Field(default="", alias="classroomName")
+    course_begin_time: str = Field(default="", alias="courseBeginTime")
+    course_end_time: str = Field(default="", alias="courseEndTime")
+    canvas_course_id: str = Field(default="", alias="canvasCourseId")
+    cour_id: str = Field(default="", alias="courId")
+
+    @property
+    def display_name(self) -> str:
+        return self.video_name or f"video-{self.video_id}"
+
+    @field_validator(
+        "video_id",
+        "video_name",
+        "user_name",
+        "classroom_name",
+        "course_begin_time",
+        "course_end_time",
+        "canvas_course_id",
+        "cour_id",
+        mode="before",
+    )
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class VideoInfo(CanvasModel):
+    id: str = ""
+    cour_id: str = Field(default="", alias="courId")
+    video_id: str = Field(default="", alias="videoId")
+    video_name: str = Field(default="", alias="videoName")
+    user_name: str = Field(default="", alias="userName")
+    classroom_name: str = Field(default="", alias="classroomName")
+    course_begin_time: str = Field(default="", alias="courseBeginTime")
+    course_end_time: str = Field(default="", alias="courseEndTime")
+    video_play_response_vo_list: List[Dict[str, Any]] = Field(
+        default_factory=list, alias="videoPlayResponseVoList"
+    )
+    video_play_response_vo_list_snake: List[Dict[str, Any]] = Field(
+        default_factory=list, alias="video_play_response_vo_list"
+    )
+
+    @property
+    def play_items(self) -> List[Dict[str, Any]]:
+        return self.video_play_response_vo_list or self.video_play_response_vo_list_snake
+
+    @field_validator(
+        "id",
+        "cour_id",
+        "video_id",
+        "video_name",
+        "user_name",
+        "classroom_name",
+        "course_begin_time",
+        "course_end_time",
+        mode="before",
+    )
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class VideoSubtitleItem(CanvasModel):
+    bg: int = 0
+    ed: int = 0
+    res: str = ""
+
+
+class VideoSubtitleBody(CanvasModel):
+    before_assembly_list: List[VideoSubtitleItem] = Field(
+        default_factory=list, alias="beforeAssemblyList"
+    )
+    after_assembly_list: List[VideoSubtitleItem] = Field(
+        default_factory=list, alias="afterAssemblyList"
+    )
+
+    @property
+    def preferred_items(self) -> List[VideoSubtitleItem]:
+        return self.after_assembly_list or self.before_assembly_list
+
+
+class VideoPPTSlice(CanvasModel):
+    create_sec: int = Field(default=0, alias="createSec")
+    ocr: Any = ""
+    ppt_img_url: str = Field(default="", alias="pptImgUrl")
+
+    @field_validator("ppt_img_url", mode="before")
+    @classmethod
+    def _stringify_url(cls, value: object) -> str:
+        return "" if value is None else str(value)
 
 
 class DownloadRecord(BaseModel):

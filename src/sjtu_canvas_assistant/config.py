@@ -21,6 +21,8 @@ class Settings:
     token: str
     data_dir: Path
     timeout_seconds: float = 30.0
+    video_token: str = ""
+    video_course_id: str = ""
 
 
 def _clean_base_url(value: str) -> str:
@@ -43,6 +45,8 @@ def load_settings(
     resolved_token = token or os.getenv("CANVAS_TOKEN", "")
     resolved_base_url = base_url or os.getenv("CANVAS_BASE_URL", DEFAULT_BASE_URL)
     resolved_data_dir = data_dir or Path(os.getenv("CANVAS_DATA_DIR", DEFAULT_DATA_DIR))
+    resolved_video_token = os.getenv("SJTU_VIDEO_TOKEN", "").strip()
+    resolved_video_course_id = os.getenv("SJTU_VIDEO_COURSE_ID", "").strip()
 
     if require_token and not resolved_token.strip():
         raise ConfigError(
@@ -60,4 +64,6 @@ def load_settings(
         token=resolved_token.strip(),
         data_dir=Path(resolved_data_dir).expanduser(),
         timeout_seconds=timeout_seconds,
+        video_token=resolved_video_token,
+        video_course_id=resolved_video_course_id,
     )
