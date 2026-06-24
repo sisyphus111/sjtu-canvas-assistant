@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 sjtu-canvas = "sjtu_canvas_assistant.cli:main"
 sjtu-canvas-assistant = "sjtu_canvas_assistant.cli:main"
+sjtu-canvas-mcp = "sjtu_canvas_assistant.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

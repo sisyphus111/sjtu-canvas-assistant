@@ -15,6 +15,7 @@ from .canvas_client import CanvasClient
 from .config import load_settings
 from .exceptions import AssistantError
 from .models import Assignment, CanvasFile, Course, CourseBundle, DownloadRecord, Folder, Module
+from .mcp_server import main as run_mcp_server
 from .sync import CourseSyncer
 from .video_stub import video_index_stub
 
@@ -517,6 +518,13 @@ def video_status(
             f"Planned LTI entry: /courses/{course_id}/external_tools/8329"
         )
     console.print_json(json.dumps(info, ensure_ascii=False))
+
+
+@app.command("mcp")
+def mcp() -> None:
+    """Run the local MCP stdio server."""
+
+    run_mcp_server()
 
 
 def main() -> None:

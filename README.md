@@ -217,25 +217,56 @@ data/课程名 [课程ID]/course_index.md
 
 ## MCP 后续接入
 
-第一版已经把能力拆成可复用模块：
+项目已经把能力拆成可复用模块：
 
 - `CanvasClient`: Canvas API、分页、错误处理、下载流
 - `CourseSyncer`: 课程元数据拉取、下载规划、本地同步
 - `indexer`: JSON/Markdown 索引
 - `models`: 稳定数据模型
 
-后续 MCP Server 可以暴露这些工具：
+本地 MCP stdio server 已提供，启动命令：
+
+```bash
+sjtu-canvas-mcp
+```
+
+也可以通过主 CLI 启动：
+
+```bash
+sjtu-canvas mcp
+```
+
+在支持 MCP 的客户端中可配置为：
+
+```json
+{
+  "mcpServers": {
+    "sjtu-canvas": {
+      "command": "/Users/hebing/Documents/Canvas/.venv/bin/sjtu-canvas-mcp",
+      "cwd": "/Users/hebing/Documents/Canvas"
+    }
+  }
+}
+```
+
+`cwd` 建议指向项目根目录，这样 server 能读取本地 `.env`。不要把 `.env` 提交到 git。
+
+当前暴露的工具：
 
 - `get_current_user`
 - `list_courses`
+- `get_course`
 - `list_course_files`
 - `list_course_folders`
 - `list_course_modules`
 - `list_course_assignments`
-- `download_course_files`
+- `get_course_bundle`
+- `plan_course_download`
 - `generate_course_index`
+- `download_course_files`
+- `video_status`
 
-建议 MCP 第一版只读和下载，不开放作业提交。
+作业相关能力只读，不开放提交。
 
 ## 开发验证
 
@@ -243,6 +274,7 @@ data/课程名 [课程ID]/course_index.md
 python -m pytest
 sjtu-canvas --help
 sjtu-canvas video-status
+printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n' | sjtu-canvas-mcp
 ```
 
 如果没有真实 token，也可以运行上述 mock 测试和 help 命令验证框架。
