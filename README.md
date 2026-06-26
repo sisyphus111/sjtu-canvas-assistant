@@ -182,6 +182,14 @@ sjtu-canvas video subtitle 12345 VIDEO_ID --output data/subtitles/example.srt
 sjtu-canvas video ppt 12345 VIDEO_ID
 ```
 
+下载 PPT 回放图片并合成 PDF：
+
+```bash
+sjtu-canvas video ppt-export 12345 VIDEO_ID
+sjtu-canvas video ppt-export 12345 VIDEO_ID --output data/ppt/example
+sjtu-canvas video ppt-export 12345 VIDEO_ID --no-pdf
+```
+
 ## 下载与索引行为
 
 下载时会尽量保持 Canvas 文件夹结构。例如 Canvas 中的：
@@ -233,7 +241,7 @@ data/课程名 [课程ID]/course_index.md
 
 ## 视频、字幕、PPT 回放
 
-当前已经接入只读视频能力。认证流程是：
+当前已经接入视频读取和本地导出能力。认证流程是：
 
 1. 使用 Canvas Access Token 调用 `/api/v1/courses/{course_id}/external_tools/sessionless_launch?id=8329&launch_type=course_navigation`。
 2. 打开 Canvas 返回的一次性 LTI launch URL。
@@ -249,12 +257,17 @@ data/课程名 [课程ID]/course_index.md
 - `video subtitle`: 调用 `transfer/translate/detail` 获取字幕并生成 SRT。
 - `video ppt`: 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片元数据。
 
+支持的本地导出功能：
+
+- `video ppt-export`: 下载 PPT 回放切片图片，默认合成为 `ppt.pdf`。
+- 已存在的图片会默认跳过；加 `--force` 会重新下载并重新生成 PDF。
+- 加 `--no-pdf` 可以只下载图片，不合成 PDF。
+
 字幕来源是 SJTU 视频系统返回的数据。本工具不做本地语音识别，也不调用大模型生成字幕，只把接口返回的字幕行转换成 `.srt`。当前接口没有暴露字幕作者或生成器字段，因此不能可靠区分是平台自动转写、教师上传，还是后续修订版本。
 
 暂不实现：
 
 - 视频二进制下载。
-- PPT 图片下载与 PDF 合成。
 - 任何作业提交或自动交互。
 
 根据参考项目实现，底层端点是：
@@ -276,6 +289,7 @@ data/课程名 [课程ID]/course_index.md
 - `CanvasClient`: Canvas API、分页、错误处理、下载流
 - `CourseSyncer`: 课程元数据拉取、下载规划、本地同步
 - `SJTUVideoClient`: 视频 LTI 认证、视频列表、详情、字幕、PPT 切片元数据
+- `PPTAssetExporter`: PPT 回放图片下载和 PDF 合成
 - `indexer`: JSON/Markdown 索引
 - `models`: 稳定数据模型
 
@@ -325,8 +339,9 @@ sjtu-canvas mcp
 - `get_video_info`
 - `get_video_subtitle`
 - `get_video_ppt_slices`
+- `download_video_ppt`
 
-作业和视频相关能力只读，不开放提交或自动发布。
+作业相关能力只读，不开放提交。视频导出工具只写本地文件，不自动发布或上传。
 
 ## 开发验证
 

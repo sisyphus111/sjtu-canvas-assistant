@@ -23,6 +23,7 @@ from .models import (
     DownloadRecord,
     Folder,
     Module,
+    PPTExportResult,
     VideoInfo,
     VideoPPTSlice,
     VideoSubtitleBody,
@@ -30,6 +31,7 @@ from .models import (
 from .mcp_server import main as run_mcp_server
 from .path_utils import safe_path_segment
 from .sync import CourseSyncer
+from .video_assets import PPTAssetExporter
 from .video_client import (
     SJTUVideoClient,
     redact_video_payload,
@@ -330,6 +332,41 @@ def _render_ppt_slices(slices: list[VideoPPTSlice]) -> None:
             _format_video_offset(item.create_sec),
             _ocr_summary(item.ocr),
             "yes" if item.ppt_img_url else "",
+        )
+    console.print(table)
+
+
+def _render_ppt_export_result(result: PPTExportResult) -> None:
+    console.print(
+        "  ".join(
+            [
+                f"slices: {result.slices_count}",
+                "statuses: "
+                + ", ".join(
+                    f"{status}={count}" for status, count in sorted(result.summary.items())
+                ),
+            ]
+        )
+    )
+    console.print(f"Image directory: {result.image_dir}")
+    if result.pdf_path is not None:
+        console.print(f"PDF: {result.pdf_path} ({result.pdf_status or 'not generated'})")
+
+    table = Table(title="PPT Image Export")
+    table.add_column("#", justify="right")
+    table.add_column("Offset", justify="right")
+    table.add_column("Status")
+    table.add_column("Size", justify="right")
+    table.add_column("Path")
+    table.add_column("Message")
+    for record in result.images:
+        table.add_row(
+            str(record.slice_index),
+            _format_video_offset(record.offset_ms),
+            record.status,
+            _format_bytes(record.size),
+            record.relative_image_path or str(record.image_path or ""),
+            record.message,
         )
     console.print(table)
 
@@ -776,7 +813,7 @@ def video_ppt(
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
     json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
 ) -> None:
-    """Read PPT replay slice metadata for one video. Images/PDF assembly are not downloaded yet."""
+    """Read PPT replay slice metadata for one video without downloading images."""
 
     try:
         client, _ = _make_video_client(token, base_url, data_dir)
@@ -786,6 +823,40 @@ def video_ppt(
             _print_video_json([item.model_dump(mode="json") for item in slices])
         else:
             _render_ppt_slices(slices)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@video_app.command("ppt-export")
+def video_ppt_export(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    video_id: str = typer.Argument(..., help="SJTU video ID from `video list`."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(None, "--data-dir", help="Local data directory."),
+    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output directory for PPT images and default PDF."),
+    pdf_path: Optional[Path] = typer.Option(None, "--pdf-path", help="Optional PDF output path."),
+    make_pdf: bool = typer.Option(True, "--pdf/--no-pdf", help="Assemble downloaded images into a PDF."),
+    force: bool = typer.Option(False, "--force", help="Re-download existing images and regenerate PDF."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Download PPT replay images and optionally assemble them into a PDF."""
+
+    try:
+        client, root = _make_video_client(token, base_url, data_dir)
+        with client:
+            result = PPTAssetExporter(client, root).export_video_ppt(
+                course_id,
+                video_id,
+                output_dir=output_dir,
+                pdf_path=pdf_path,
+                make_pdf=make_pdf,
+                force=force,
+            )
+        if json_output:
+            _print_video_json(result)
+        else:
+            _render_ppt_export_result(result)
     except AssistantError as exc:
         _exit_with_error(exc)
 

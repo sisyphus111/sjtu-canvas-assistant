@@ -77,6 +77,7 @@ def _render_status_block(value: object) -> str:
         lines.append(f"Subtitle source: {_md_escape(subtitle_source)}")
     for key, title in [
         ("read_only_features", "Read-only features"),
+        ("local_export_features", "Local export features"),
         ("not_implemented", "Not implemented"),
         ("candidate_tools", "Tools"),
     ]:

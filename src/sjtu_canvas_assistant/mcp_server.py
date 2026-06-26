@@ -19,6 +19,7 @@ from .canvas_client import CanvasClient
 from .config import load_settings
 from .exceptions import AssistantError
 from .sync import CourseSyncer
+from .video_assets import PPTAssetExporter
 from .video_client import (
     SJTUVideoClient,
     redact_video_payload,
@@ -151,6 +152,15 @@ class CanvasMCPToolbox:
             return None
         if not isinstance(raw, str):
             raise ValueError("output_dir must be a string when provided")
+        return Path(raw).expanduser()
+
+    @staticmethod
+    def _optional_path(arguments: Mapping[str, Any], key: str) -> Optional[Path]:
+        raw = arguments.get(key)
+        if raw is None or raw == "":
+            return None
+        if not isinstance(raw, str):
+            raise ValueError(f"{key} must be a string when provided")
         return Path(raw).expanduser()
 
     @staticmethod
@@ -315,6 +325,24 @@ class CanvasMCPToolbox:
             slices = client.get_video_ppt_slices(course_id, video_id)
         return redact_video_payload(slices)
 
+    def download_video_ppt(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        video_id = self._video_id(arguments)
+        output_dir = self._output_dir(arguments)
+        pdf_path = self._optional_path(arguments, "pdf_path")
+        make_pdf = bool(arguments.get("make_pdf", True))
+        force = bool(arguments.get("force", False))
+        with self._video_client() as client:
+            result = PPTAssetExporter(client, self.settings.data_dir).export_video_ppt(
+                course_id,
+                video_id,
+                output_dir=output_dir,
+                pdf_path=pdf_path,
+                make_pdf=make_pdf,
+                force=force,
+            )
+        return redact_video_payload(result)
+
 
 def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
     output_dir_property = {
@@ -468,6 +496,40 @@ def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
             _course_video_schema(),
             toolbox.get_video_ppt_slices,
         ),
+        ToolDefinition(
+            "download_video_ppt",
+            "Download Video PPT",
+            "Download PPT replay images for one SJTU video and optionally assemble a local PDF.",
+            _schema(
+                {
+                    "course_id": {"type": "integer", "description": "Canvas course ID"},
+                    "video_id": {
+                        "type": "string",
+                        "description": "SJTU video ID from list_course_videos",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Optional output directory for PPT images and default PDF",
+                    },
+                    "pdf_path": {
+                        "type": "string",
+                        "description": "Optional PDF output path",
+                    },
+                    "make_pdf": {
+                        "type": "boolean",
+                        "description": "Assemble downloaded images into a PDF",
+                        "default": True,
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-download existing images and regenerate PDF",
+                        "default": False,
+                    },
+                },
+                required=["course_id", "video_id"],
+            ),
+            toolbox.download_video_ppt,
+        ),
     ]
     return {tool.name: tool for tool in tools}
 
@@ -505,8 +567,8 @@ class MCPStdioServer:
             "serverInfo": {"name": "sjtu-canvas-assistant", "version": __version__},
             "instructions": (
                 "Use these tools to read SJTU Canvas courses, generate local indexes, "
-                "download course files, and read SJTU video metadata/subtitles. "
-                "Assignment and video tools are read-only; no tool submits work."
+                "download course files, and read/export SJTU video metadata/subtitles/PPT assets. "
+                "Assignment tools never submit work; video export tools only write local files."
             ),
         }
 

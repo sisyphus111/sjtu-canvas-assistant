@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 import httpx
@@ -532,10 +532,37 @@ class SJTUVideoClient:
         info = self.get_video_info(course_id, video_id)
         return self.get_ppt_slices(course_id, self._video_course_id_from_info(info))
 
+    def download_ppt_image(self, image_url: str) -> Tuple[bytes, str]:
+        """Download one PPT replay image without exposing signed URL details."""
+
+        if not image_url.startswith(("http://", "https://")):
+            raise VideoIntegrationError("PPT image URL is not usable.")
+        headers = {
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Referer": VIDEO_UI_REFERER,
+        }
+        if self.video_token:
+            headers["token"] = self.video_token
+        response = self._request(
+            "GET",
+            image_url,
+            headers=headers,
+            follow_redirects=True,
+            service="PPT image",
+        )
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+        if not response.content:
+            raise VideoIntegrationError("PPT image response was empty.")
+        if content_type and not content_type.startswith("image/") and content_type != "application/octet-stream":
+            raise VideoIntegrationError(
+                f"PPT image response was not an image: {content_type}"
+            )
+        return response.content, content_type
+
 
 def video_index_status() -> Dict[str, Any]:
     return {
-        "status": "implemented-readonly",
+        "status": "implemented-with-local-export",
         "auth": (
             "Canvas Access Token -> Canvas sessionless_launch -> SJTU video LTI "
             "tokenId -> SJTU video API token"
@@ -546,13 +573,16 @@ def video_index_status() -> Dict[str, Any]:
             "read subtitles and export SRT",
             "read PPT replay slice metadata",
         ],
+        "local_export_features": [
+            "download PPT replay images",
+            "assemble PPT replay images into PDF",
+        ],
         "subtitle_source": (
             "Subtitles are fetched from SJTU video API transfer/translate/detail; "
             "the CLI only converts returned subtitle rows to SRT."
         ),
         "not_implemented": [
             "video binary download",
-            "PPT image download/PDF assembly",
             "any assignment submission workflow",
         ],
         "endpoints": {

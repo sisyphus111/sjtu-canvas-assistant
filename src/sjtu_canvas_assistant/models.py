@@ -277,6 +277,30 @@ class VideoPPTSlice(CanvasModel):
         return "" if value is None else str(value)
 
 
+class PPTImageRecord(BaseModel):
+    slice_index: int
+    offset_ms: int = 0
+    status: str
+    image_path: Optional[Path] = None
+    relative_image_path: Optional[str] = None
+    size: int = 0
+    content_type: str = ""
+    message: str = ""
+
+
+class PPTExportResult(BaseModel):
+    course_id: int
+    video_id: str
+    image_dir: Path
+    relative_image_dir: Optional[str] = None
+    pdf_path: Optional[Path] = None
+    relative_pdf_path: Optional[str] = None
+    pdf_status: str = ""
+    slices_count: int = 0
+    summary: Dict[str, int] = Field(default_factory=dict)
+    images: List[PPTImageRecord] = Field(default_factory=list)
+
+
 class DownloadRecord(BaseModel):
     file_id: int
     canvas_path: str
