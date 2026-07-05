@@ -163,6 +163,99 @@ class Assignment(CanvasModel):
     grading_type: str = ""
 
 
+class SubmissionAttachment(CanvasModel):
+    id: int
+    uuid: str = ""
+    display_name: str = ""
+    filename: str = ""
+    url: str = ""
+    size: int = 0
+    content_type: str = Field(default="", alias="content-type")
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    modified_at: Optional[str] = None
+
+    @property
+    def effective_name(self) -> str:
+        return self.display_name or self.filename or f"submission-file-{self.id}"
+
+    @field_validator("display_name", "filename", "url", "content_type", mode="before")
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class SubmissionAttempt(CanvasModel):
+    id: Optional[int] = None
+    attempt: Optional[int] = None
+    submitted_at: Optional[str] = None
+    submission_type: str = ""
+    workflow_state: str = ""
+    attachments: List[SubmissionAttachment] = Field(default_factory=list)
+    body: Optional[str] = None
+    url: Optional[str] = None
+
+    @field_validator("submission_type", "workflow_state", mode="before")
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class Submission(CanvasModel):
+    id: Optional[int] = None
+    assignment_id: Optional[int] = None
+    user_id: Optional[int] = None
+    submitted_at: Optional[str] = None
+    attempt: Optional[int] = None
+    workflow_state: str = ""
+    submission_type: str = ""
+    grade: Optional[str] = None
+    score: Optional[float] = None
+    late: Optional[bool] = None
+    missing: Optional[bool] = None
+    excused: Optional[bool] = None
+    attachments: List[SubmissionAttachment] = Field(default_factory=list)
+    submission_history: List[SubmissionAttempt] = Field(default_factory=list)
+    body: Optional[str] = None
+    url: Optional[str] = None
+    preview_url: str = ""
+
+    @field_validator("workflow_state", "submission_type", "preview_url", mode="before")
+    @classmethod
+    def _stringify(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class MySubmission(BaseModel):
+    assignment: Assignment
+    submission: Submission
+
+
+class SubmissionAttachmentDownloadRecord(BaseModel):
+    assignment_id: int
+    assignment_name: str
+    submission_id: Optional[int] = None
+    attempt: Optional[int] = None
+    submitted_at: Optional[str] = None
+    attachment_id: int
+    file_name: str
+    status: str
+    size: int = 0
+    content_type: str = ""
+    download_path: Optional[Path] = None
+    relative_download_path: Optional[str] = None
+    message: str = ""
+
+
+class SubmissionDownloadResult(BaseModel):
+    generated_at: str
+    base_url: str
+    course: Course
+    submissions: List[MySubmission] = Field(default_factory=list)
+    downloads: List[SubmissionAttachmentDownloadRecord] = Field(default_factory=list)
+    summary: Dict[str, int] = Field(default_factory=dict)
+
+
 class VideoAuth(CanvasModel):
     """Resolved SJTU video service auth for one Canvas course.
 

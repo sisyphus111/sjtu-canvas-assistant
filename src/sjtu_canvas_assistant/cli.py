@@ -23,7 +23,9 @@ from .models import (
     DownloadRecord,
     Folder,
     Module,
+    MySubmission,
     PPTExportResult,
+    SubmissionDownloadResult,
     VideoInfo,
     VideoPPTSlice,
     VideoSubtitleBody,
@@ -98,6 +100,31 @@ def _print_json(value: object) -> None:
     else:
         payload = value
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _redact_canvas_payload(value: object) -> object:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")  # type: ignore[attr-defined]
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if (
+                key_text in {"url", "preview_url"}
+                and isinstance(item, str)
+                and item.startswith(("http://", "https://"))
+            ):
+                redacted[key] = "<redacted-url>"
+            else:
+                redacted[key] = _redact_canvas_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_canvas_payload(item) for item in value]
+    return value
+
+
+def _print_canvas_json(value: object) -> None:
+    typer.echo(json.dumps(_redact_canvas_payload(value), ensure_ascii=False, indent=2))
 
 
 def _print_video_json(value: object) -> None:
@@ -241,6 +268,96 @@ def _render_assignments(assignments: list[Assignment]) -> None:
     console.print(table)
 
 
+def _submission_attachment_count(item: MySubmission) -> int:
+    submission = item.submission
+    attachment_ids = {attachment.id for attachment in submission.attachments}
+    for attempt in submission.submission_history:
+        attachment_ids.update(attachment.id for attachment in attempt.attachments)
+    return len(attachment_ids)
+
+
+def _render_submissions(submissions: list[MySubmission]) -> None:
+    table = Table(title="My Canvas Submissions")
+    table.add_column("Assignment ID", justify="right")
+    table.add_column("Assignment")
+    table.add_column("Type")
+    table.add_column("State")
+    table.add_column("Submitted At")
+    table.add_column("Attempt", justify="right")
+    table.add_column("Files", justify="right")
+    table.add_column("Score", justify="right")
+    for item in submissions:
+        submission = item.submission
+        score = ""
+        if submission.score is not None:
+            score = str(submission.score)
+        elif submission.grade:
+            score = submission.grade
+        table.add_row(
+            str(item.assignment.id),
+            item.assignment.name,
+            submission.submission_type,
+            submission.workflow_state,
+            submission.submitted_at or "",
+            "" if submission.attempt is None else str(submission.attempt),
+            str(_submission_attachment_count(item)),
+            score,
+        )
+    console.print(table)
+
+
+def _render_submission_detail(item: MySubmission) -> None:
+    submission = item.submission
+    console.print(f"[bold]{item.assignment.name}[/bold] ({item.assignment.id})")
+    table = Table(title="My Submission")
+    table.add_column("Field")
+    table.add_column("Value")
+    for key, value in [
+        ("submission_id", submission.id or ""),
+        ("workflow_state", submission.workflow_state),
+        ("submission_type", submission.submission_type),
+        ("submitted_at", submission.submitted_at or ""),
+        ("attempt", submission.attempt or ""),
+        ("score", submission.score if submission.score is not None else ""),
+        ("grade", submission.grade or ""),
+        ("late", "" if submission.late is None else submission.late),
+        ("missing", "" if submission.missing is None else submission.missing),
+        ("attachments", _submission_attachment_count(item)),
+    ]:
+        table.add_row(key, str(value))
+    console.print(table)
+
+    attachment_table = Table(title="Submission Attachments")
+    attachment_table.add_column("Attempt", justify="right")
+    attachment_table.add_column("File ID", justify="right")
+    attachment_table.add_column("Name")
+    attachment_table.add_column("Size", justify="right")
+    attachment_table.add_column("Updated")
+    seen = set()
+    for attempt in submission.submission_history:
+        for attachment in attempt.attachments:
+            seen.add((attempt.attempt, attachment.id))
+            attachment_table.add_row(
+                "" if attempt.attempt is None else str(attempt.attempt),
+                str(attachment.id),
+                attachment.effective_name,
+                _format_bytes(attachment.size),
+                attachment.updated_at or attachment.modified_at or "",
+            )
+    for attachment in submission.attachments:
+        key = (submission.attempt, attachment.id)
+        if key in seen:
+            continue
+        attachment_table.add_row(
+            "" if submission.attempt is None else str(submission.attempt),
+            str(attachment.id),
+            attachment.effective_name,
+            _format_bytes(attachment.size),
+            attachment.updated_at or attachment.modified_at or "",
+        )
+    console.print(attachment_table)
+
+
 def _render_videos(videos: list[CanvasVideo]) -> None:
     table = Table(title="Course Videos")
     table.add_column("Video ID")
@@ -366,6 +483,38 @@ def _render_ppt_export_result(result: PPTExportResult) -> None:
             record.status,
             _format_bytes(record.size),
             record.relative_image_path or str(record.image_path or ""),
+            record.message,
+        )
+    console.print(table)
+
+
+def _render_submission_download_result(result: SubmissionDownloadResult) -> None:
+    console.print(
+        "  ".join(
+            [
+                f"assignments: {len(result.submissions)}",
+                f"files: {len(result.downloads)}",
+                "statuses: "
+                + ", ".join(
+                    f"{status}={count}" for status, count in sorted(result.summary.items())
+                ),
+            ]
+        )
+    )
+    table = Table(title="Submission File Downloads")
+    table.add_column("Status")
+    table.add_column("Assignment")
+    table.add_column("Attempt", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Local Path")
+    table.add_column("Message")
+    for record in result.downloads:
+        table.add_row(
+            record.status,
+            record.assignment_name,
+            "" if record.attempt is None else str(record.attempt),
+            _format_bytes(record.size),
+            record.relative_download_path or str(record.download_path or ""),
             record.message,
         )
     console.print(table)
@@ -578,6 +727,100 @@ def assignments(
             _print_json([assignment.model_dump(mode="json") for assignment in result])
         else:
             _render_assignments(result)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@app.command("submissions")
+def submissions(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Local data directory."
+    ),
+    show_all: bool = typer.Option(
+        False, "--all", help="Include assignments with no submitted work."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """List my submissions for one course. This command is read-only."""
+
+    try:
+        client, root = _make_client(token, base_url, data_dir)
+        with client:
+            result = CourseSyncer(client, root).fetch_my_submissions(
+                course_id, submitted_only=not show_all
+            )
+        if json_output:
+            _print_canvas_json([item.model_dump(mode="json") for item in result])
+        else:
+            _render_submissions(result)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@app.command("submission")
+def submission(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    assignment_id: int = typer.Argument(..., help="Canvas assignment ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Local data directory."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Show my submission for one assignment. This command is read-only."""
+
+    try:
+        client, root = _make_client(token, base_url, data_dir)
+        with client:
+            result = CourseSyncer(client, root).fetch_my_submission(course_id, assignment_id)
+        if json_output:
+            _print_canvas_json(result)
+        else:
+            _render_submission_detail(result)
+    except AssistantError as exc:
+        _exit_with_error(exc)
+
+
+@app.command("download-submissions")
+def download_submissions(
+    course_id: int = typer.Argument(..., help="Canvas course ID."),
+    token: Optional[str] = typer.Option(None, "--token", help="Canvas token override."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Canvas base URL override."),
+    data_dir: Optional[Path] = typer.Option(
+        None, "--data-dir", help="Local data directory."
+    ),
+    assignment_id: Optional[int] = typer.Option(
+        None, "--assignment-id", help="Only download one assignment."
+    ),
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Download output directory."
+    ),
+    latest_only: bool = typer.Option(
+        False, "--latest-only", help="Download only the latest submission attachment set."
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-download existing same-size files."),
+    json_output: bool = typer.Option(False, "--json", help="Print redacted JSON."),
+) -> None:
+    """Download my submitted assignment attachments. This never submits work."""
+
+    try:
+        client, root = _make_client(token, base_url, data_dir)
+        with client:
+            result = CourseSyncer(client, root).download_my_submission_files(
+                course_id,
+                assignment_id=assignment_id,
+                output_dir=output_dir,
+                include_history=not latest_only,
+                skip_existing=not force,
+            )
+        if json_output:
+            _print_canvas_json(result)
+        else:
+            _render_submission_download_result(result)
     except AssistantError as exc:
         _exit_with_error(exc)
 

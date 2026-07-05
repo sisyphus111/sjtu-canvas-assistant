@@ -53,6 +53,27 @@ def _pretty_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=_json_default)
 
 
+def _redact_canvas_payload(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if (
+                key_text in {"url", "preview_url"}
+                and isinstance(item, str)
+                and item.startswith(("http://", "https://"))
+            ):
+                redacted[str(key)] = "<redacted-url>"
+            else:
+                redacted[str(key)] = _redact_canvas_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_canvas_payload(item) for item in value]
+    return value
+
+
 def _schema(
     properties: Mapping[str, Mapping[str, Any]],
     *,
@@ -177,6 +198,15 @@ class CanvasMCPToolbox:
             raise ValueError("video_id must be a non-empty string")
         return video_id.strip()
 
+    @staticmethod
+    def _optional_assignment_id(arguments: Mapping[str, Any]) -> Optional[int]:
+        assignment_id = arguments.get("assignment_id")
+        if assignment_id is None:
+            return None
+        if not isinstance(assignment_id, int):
+            raise ValueError("assignment_id must be an integer when provided")
+        return assignment_id
+
     def get_current_user(self, _: Mapping[str, Any]) -> Dict[str, Any]:
         with self._client() as client:
             return client.get_current_user().model_dump(mode="json")
@@ -223,6 +253,24 @@ class CanvasMCPToolbox:
                 assignment.model_dump(mode="json")
                 for assignment in client.list_assignments(course_id)
             ]
+
+    def list_my_submissions(self, arguments: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        course_id = self._course_id(arguments)
+        submitted_only = bool(arguments.get("submitted_only", True))
+        with self._client() as client:
+            result = self._syncer(client).fetch_my_submissions(
+                course_id, submitted_only=submitted_only
+            )
+        return _redact_canvas_payload(result)
+
+    def get_my_submission(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        assignment_id = self._optional_assignment_id(arguments)
+        if assignment_id is None:
+            raise ValueError("assignment_id is required")
+        with self._client() as client:
+            result = self._syncer(client).fetch_my_submission(course_id, assignment_id)
+        return _redact_canvas_payload(result)
 
     def get_course_bundle(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
         course_id = self._course_id(arguments)
@@ -282,6 +330,22 @@ class CanvasMCPToolbox:
             "markdown_path": str(markdown_path),
             "downloads": [record.model_dump(mode="json") for record in index.downloads],
         }
+
+    def download_my_submission_files(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        course_id = self._course_id(arguments)
+        assignment_id = self._optional_assignment_id(arguments)
+        output_dir = self._output_dir(arguments)
+        include_history = bool(arguments.get("include_history", True))
+        force = bool(arguments.get("force", False))
+        with self._client() as client:
+            result = self._syncer(client).download_my_submission_files(
+                course_id,
+                assignment_id=assignment_id,
+                output_dir=output_dir,
+                include_history=include_history,
+                skip_existing=not force,
+            )
+        return _redact_canvas_payload(result)
 
     def video_status(self, _: Mapping[str, Any]) -> Dict[str, Any]:
         return video_index_status()
@@ -418,6 +482,37 @@ def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
             toolbox.list_course_assignments,
         ),
         ToolDefinition(
+            "list_my_submissions",
+            "List My Submissions",
+            "List my submissions for one Canvas course. This is read-only and returns redacted URLs.",
+            _course_id_schema(
+                {
+                    "submitted_only": {
+                        "type": "boolean",
+                        "description": "Only include assignments with submitted work or attachments",
+                        "default": True,
+                    }
+                }
+            ),
+            toolbox.list_my_submissions,
+        ),
+        ToolDefinition(
+            "get_my_submission",
+            "Get My Submission",
+            "Read my submission for one assignment. This is read-only and returns redacted URLs.",
+            _schema(
+                {
+                    "course_id": {"type": "integer", "description": "Canvas course ID"},
+                    "assignment_id": {
+                        "type": "integer",
+                        "description": "Canvas assignment ID",
+                    },
+                },
+                required=["course_id", "assignment_id"],
+            ),
+            toolbox.get_my_submission,
+        ),
+        ToolDefinition(
             "get_course_bundle",
             "Get Course Bundle",
             "Fetch course, folders, files, modules, and assignments in one call.",
@@ -453,6 +548,31 @@ def build_tools(toolbox: CanvasMCPToolbox) -> Dict[str, ToolDefinition]:
                 }
             ),
             toolbox.download_course_files,
+        ),
+        ToolDefinition(
+            "download_my_submission_files",
+            "Download My Submission Files",
+            "Download my submitted assignment attachments locally. This never submits or modifies work.",
+            _course_id_schema(
+                {
+                    **output_dir_property,
+                    "assignment_id": {
+                        "type": "integer",
+                        "description": "Optional assignment ID; omit to download all assignment submissions",
+                    },
+                    "include_history": {
+                        "type": "boolean",
+                        "description": "Include attachments from submission history attempts",
+                        "default": True,
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-download even when a same-size local file exists",
+                        "default": False,
+                    },
+                }
+            ),
+            toolbox.download_my_submission_files,
         ),
         ToolDefinition(
             "video_status",
@@ -568,7 +688,8 @@ class MCPStdioServer:
             "instructions": (
                 "Use these tools to read SJTU Canvas courses, generate local indexes, "
                 "download course files, and read/export SJTU video metadata/subtitles/PPT assets. "
-                "Assignment tools never submit work; video export tools only write local files."
+                "Assignment tools are read-only unless explicitly downloading your own submitted files; "
+                "no tool submits work. Video export tools only write local files."
             ),
         }
 

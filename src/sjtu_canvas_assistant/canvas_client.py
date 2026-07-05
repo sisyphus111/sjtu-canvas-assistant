@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import TypeAdapter
@@ -17,12 +29,29 @@ from .exceptions import (
     CanvasPermissionError,
     DownloadError,
 )
-from .models import Assignment, CanvasFile, Course, Folder, Module, ModuleItem, User
+from .models import (
+    Assignment,
+    CanvasFile,
+    Course,
+    Folder,
+    Module,
+    ModuleItem,
+    Submission,
+    SubmissionAttachment,
+    User,
+)
 
 ParamInput = Optional[
     Union[Mapping[str, Any], Sequence[Tuple[str, Any]]]
 ]
 T = TypeVar("T")
+
+
+def _safe_url_label(url: object) -> str:
+    parsed = urlparse(str(url))
+    if not parsed.scheme or not parsed.netloc:
+        return str(url).split("?", 1)[0]
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 class CanvasClient:
@@ -94,9 +123,13 @@ class CanvasClient:
                 method, url, params=params, headers=self._headers(headers)
             )
         except httpx.TimeoutException as exc:
-            raise CanvasNetworkError(f"Canvas request timed out: {method} {url}") from exc
+            raise CanvasNetworkError(
+                f"Canvas request timed out: {method} {_safe_url_label(url)}"
+            ) from exc
         except httpx.TransportError as exc:
-            raise CanvasNetworkError(f"Canvas network failure: {method} {url}") from exc
+            raise CanvasNetworkError(
+                f"Canvas network failure: {method} {_safe_url_label(url)}"
+            ) from exc
 
         self._raise_for_status(response)
         return response
@@ -247,6 +280,52 @@ class CanvasClient:
             f"/api/v1/courses/{course_id}/assignments", Assignment, params=params
         )
 
+    def get_assignment(self, course_id: int, assignment_id: int) -> Assignment:
+        return self._get_model(
+            f"/api/v1/courses/{course_id}/assignments/{assignment_id}",
+            Assignment,
+            params=[
+                ("include[]", "submission"),
+                ("include[]", "overrides"),
+                ("include[]", "all_dates"),
+            ],
+        )
+
+    def get_my_submission(self, course_id: int, assignment_id: int) -> Submission:
+        params = [
+            ("include[]", "submission_history"),
+            ("include[]", "submission_comments"),
+            ("include[]", "rubric_assessment"),
+            ("include[]", "assignment"),
+            ("include[]", "read_status"),
+        ]
+        return self._get_model(
+            f"/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self",
+            Submission,
+            params=params,
+        )
+
+    def list_my_submissions(self, course_id: int) -> List[Tuple[Assignment, Submission]]:
+        records: List[Tuple[Assignment, Submission]] = []
+        for assignment in self.list_assignments(course_id):
+            records.append(
+                (assignment, self.get_my_submission(course_id, assignment.id))
+            )
+        return records
+
+    def get_file_public_url(
+        self, file_id: int, *, submission_id: Optional[int] = None
+    ) -> str:
+        params: List[Tuple[str, Any]] = []
+        if submission_id is not None:
+            params.append(("submission_id", submission_id))
+        payload = self._get_json(f"/api/v1/files/{file_id}/public_url", params=params)
+        if isinstance(payload, Mapping):
+            url = str(payload.get("public_url") or payload.get("url") or "").strip()
+            if url:
+                return url
+        raise DownloadError(f"Canvas did not return a download URL for file {file_id}.")
+
     def download_file(
         self,
         file: CanvasFile,
@@ -256,11 +335,48 @@ class CanvasClient:
     ) -> None:
         if not file.url:
             raise DownloadError(f"Canvas file {file.id} has no download URL.")
+        self._stream_download(
+            file.url,
+            destination,
+            expected_size=file.size,
+            display_name=file.effective_name,
+        )
+
+    def download_submission_attachment(
+        self,
+        attachment: SubmissionAttachment,
+        destination: Path,
+        *,
+        submission_id: Optional[int] = None,
+        chunk_size: int = 1024 * 1024,
+    ) -> None:
+        download_url = attachment.url or self.get_file_public_url(
+            attachment.id, submission_id=submission_id
+        )
+        self._stream_download(
+            download_url,
+            destination,
+            expected_size=attachment.size,
+            display_name=attachment.effective_name,
+            chunk_size=chunk_size,
+        )
+
+    def _stream_download(
+        self,
+        url: str,
+        destination: Path,
+        *,
+        expected_size: int = 0,
+        display_name: str = "file",
+        chunk_size: int = 1024 * 1024,
+    ) -> None:
+        if not url:
+            raise DownloadError(f"Canvas file {display_name} has no download URL.")
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = destination.with_name(destination.name + ".part")
         response: Optional[httpx.Response] = None
         try:
-            response = self._request("GET", file.url, stream=True)
+            response = self._request("GET", url, stream=True)
             with tmp_path.open("wb") as handle:
                 for chunk in response.iter_bytes(chunk_size=chunk_size):
                     if chunk:
@@ -274,8 +390,8 @@ class CanvasClient:
             if response is not None:
                 response.close()
 
-        if file.size and destination.stat().st_size != file.size:
+        if expected_size and destination.stat().st_size != expected_size:
             raise DownloadError(
-                f"Downloaded size mismatch for {file.effective_name}: "
-                f"expected {file.size}, got {destination.stat().st_size}."
+                f"Downloaded size mismatch for {display_name}: "
+                f"expected {expected_size}, got {destination.stat().st_size}."
             )

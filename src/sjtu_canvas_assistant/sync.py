@@ -2,15 +2,35 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .canvas_client import CanvasClient
-from .exceptions import AssistantError, DownloadError
+from .exceptions import AssistantError
 from .indexer import write_index
-from .models import CanvasFile, CourseBundle, CourseIndex, DownloadRecord, Folder
-from .path_utils import canvas_file_path, planned_file_path, unique_path_for_conflict
+from .models import (
+    Assignment,
+    CanvasFile,
+    CourseBundle,
+    CourseIndex,
+    DownloadRecord,
+    Folder,
+    MySubmission,
+    Submission,
+    SubmissionAttachment,
+    SubmissionAttachmentDownloadRecord,
+    SubmissionAttempt,
+    SubmissionDownloadResult,
+)
+from .path_utils import (
+    canvas_file_path,
+    course_dir_name,
+    planned_file_path,
+    safe_path_segment,
+    unique_path_for_conflict,
+)
 from .video_client import video_index_status
 
 
@@ -172,6 +192,165 @@ class CourseSyncer:
         index = self._make_index(bundle, records)
         return write_index(index, root_dir)
 
+    def fetch_my_submissions(
+        self,
+        course_id: int,
+        *,
+        submitted_only: bool = False,
+    ) -> List[MySubmission]:
+        submissions = [
+            MySubmission(assignment=assignment, submission=submission)
+            for assignment, submission in self.client.list_my_submissions(course_id)
+        ]
+        if submitted_only:
+            return [
+                record
+                for record in submissions
+                if record.submission.submitted_at
+                or record.submission.attachments
+                or any(attempt.attachments for attempt in record.submission.submission_history)
+            ]
+        return submissions
+
+    def fetch_my_submission(self, course_id: int, assignment_id: int) -> MySubmission:
+        assignment = self.client.get_assignment(course_id, assignment_id)
+        submission = self.client.get_my_submission(course_id, assignment_id)
+        return MySubmission(assignment=assignment, submission=submission)
+
+    def download_my_submission_files(
+        self,
+        course_id: int,
+        *,
+        assignment_id: Optional[int] = None,
+        output_dir: Optional[Path] = None,
+        include_history: bool = True,
+        skip_existing: bool = True,
+    ) -> SubmissionDownloadResult:
+        course = self.client.get_course(course_id)
+        if assignment_id is None:
+            submissions = self.fetch_my_submissions(course_id, submitted_only=False)
+        else:
+            submissions = [self.fetch_my_submission(course_id, assignment_id)]
+
+        root_dir = output_dir or self.data_dir
+        base_dir = root_dir / course_dir_name(course) / "submissions"
+        records: List[SubmissionAttachmentDownloadRecord] = []
+        used_targets: List[Path] = []
+
+        for item in submissions:
+            assignment = item.assignment
+            submission = item.submission
+            for attempt, attachment in _submission_attachment_entries(
+                submission, include_history=include_history
+            ):
+                target = (
+                    base_dir
+                    / safe_path_segment(
+                        f"{assignment.name or 'assignment'} [{assignment.id}]",
+                        fallback=f"assignment-{assignment.id}",
+                    )
+                    / _attempt_dir_name(attempt)
+                    / safe_path_segment(
+                        attachment.effective_name,
+                        fallback=f"attachment-{attachment.id}",
+                    )
+                )
+                if target in used_targets:
+                    target = unique_path_for_conflict(target, used_targets, attachment.id)
+                used_targets.append(target)
+
+                if skip_existing and target.exists() and (
+                    not attachment.size or target.stat().st_size == attachment.size
+                ):
+                    records.append(
+                        self._submission_download_record(
+                            assignment,
+                            submission,
+                            attempt,
+                            attachment,
+                            target,
+                            "skipped",
+                            "already exists",
+                        )
+                    )
+                    continue
+                if target.exists() and attachment.size and target.stat().st_size != attachment.size:
+                    target = unique_path_for_conflict(target, used_targets, attachment.id)
+                    used_targets.append(target)
+
+                try:
+                    self.client.download_submission_attachment(
+                        attachment, target, submission_id=submission.id
+                    )
+                except (AssistantError, OSError) as exc:
+                    records.append(
+                        self._submission_download_record(
+                            assignment,
+                            submission,
+                            attempt,
+                            attachment,
+                            target,
+                            "failed",
+                            str(exc),
+                        )
+                    )
+                else:
+                    records.append(
+                        self._submission_download_record(
+                            assignment,
+                            submission,
+                            attempt,
+                            attachment,
+                            target,
+                            "downloaded",
+                        )
+                    )
+
+        return SubmissionDownloadResult(
+            generated_at=utc_now_iso(),
+            base_url=self.client.base_url,
+            course=course,
+            submissions=submissions,
+            downloads=records,
+            summary=dict(sorted(Counter(record.status for record in records).items())),
+        )
+
+    def _submission_download_record(
+        self,
+        assignment: Assignment,
+        submission: Submission,
+        attempt: Optional[SubmissionAttempt],
+        attachment: SubmissionAttachment,
+        target: Optional[Path],
+        status: str,
+        message: str = "",
+    ) -> SubmissionAttachmentDownloadRecord:
+        relative_path = None
+        if target is not None:
+            try:
+                relative_path = target.relative_to(self.data_dir).as_posix()
+            except ValueError:
+                relative_path = target.as_posix()
+        return SubmissionAttachmentDownloadRecord(
+            assignment_id=assignment.id,
+            assignment_name=assignment.name,
+            submission_id=submission.id,
+            attempt=attempt.attempt if attempt else submission.attempt,
+            submitted_at=(
+                attempt.submitted_at
+                if attempt and attempt.submitted_at
+                else submission.submitted_at
+            ),
+            attachment_id=attachment.id,
+            file_name=attachment.effective_name,
+            status=status,
+            size=attachment.size,
+            content_type=attachment.content_type,
+            download_path=target,
+            relative_download_path=relative_path,
+            message=message,
+        )
+
     def _make_index(self, bundle: CourseBundle, records: List[DownloadRecord]) -> CourseIndex:
         return CourseIndex(
             generated_at=utc_now_iso(),
@@ -193,6 +372,9 @@ class CourseSyncer:
                     "list_course_folders",
                     "list_course_modules",
                     "list_course_assignments",
+                    "list_my_submissions",
+                    "get_my_submission",
+                    "download_my_submission_files",
                     "download_course_files",
                     "generate_course_index",
                     "list_course_videos",
@@ -202,3 +384,40 @@ class CourseSyncer:
                 ],
             },
         )
+
+
+def _attempt_dir_name(attempt: Optional[SubmissionAttempt]) -> str:
+    if attempt is None or attempt.attempt is None:
+        return "latest"
+    return safe_path_segment(f"attempt-{attempt.attempt}", fallback="attempt")
+
+
+def _submission_attachment_entries(
+    submission: Submission,
+    *,
+    include_history: bool,
+) -> List[Tuple[Optional[SubmissionAttempt], SubmissionAttachment]]:
+    entries: List[Tuple[Optional[SubmissionAttempt], SubmissionAttachment]] = []
+    if include_history:
+        for attempt in sorted(
+            submission.submission_history,
+            key=lambda item: item.attempt if item.attempt is not None else -1,
+        ):
+            entries.extend((attempt, attachment) for attachment in attempt.attachments)
+
+    if not entries:
+        entries.extend((None, attachment) for attachment in submission.attachments)
+    else:
+        seen = {
+            (
+                attempt.attempt if attempt else None,
+                attachment.id,
+            )
+            for attempt, attachment in entries
+        }
+        for attachment in submission.attachments:
+            key = (submission.attempt, attachment.id)
+            if key not in seen:
+                entries.append((None, attachment))
+
+    return entries

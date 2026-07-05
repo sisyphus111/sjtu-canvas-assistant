@@ -124,6 +124,30 @@ sjtu-canvas modules 12345
 sjtu-canvas assignments 12345
 ```
 
+列出和查看自己已经提交过的作业：
+
+```bash
+sjtu-canvas submissions 12345
+sjtu-canvas submissions 12345 --all
+sjtu-canvas submission 12345 ASSIGNMENT_ID
+```
+
+下载自己提交过的作业附件：
+
+```bash
+sjtu-canvas download-submissions 12345
+sjtu-canvas download-submissions 12345 --assignment-id ASSIGNMENT_ID
+sjtu-canvas download-submissions 12345 --latest-only
+```
+
+默认会保留 Canvas submission history 中各次提交的附件，路径形如：
+
+```text
+data/课程名 [课程ID]/submissions/作业名 [作业ID]/attempt-1/文件名
+```
+
+这几个命令只读取和下载你自己的提交记录，不会提交、修改或评论作业。JSON/MCP 输出会隐藏附件下载 URL。
+
 下载前预检文件数量、总大小和本地路径：
 
 ```bash
@@ -329,10 +353,13 @@ sjtu-canvas mcp
 - `list_course_folders`
 - `list_course_modules`
 - `list_course_assignments`
+- `list_my_submissions`
+- `get_my_submission`
 - `get_course_bundle`
 - `plan_course_download`
 - `generate_course_index`
 - `download_course_files`
+- `download_my_submission_files`
 - `video_status`
 - `resolve_video_auth`
 - `list_course_videos`
@@ -341,7 +368,7 @@ sjtu-canvas mcp
 - `get_video_ppt_slices`
 - `download_video_ppt`
 
-作业相关能力只读，不开放提交。视频导出工具只写本地文件，不自动发布或上传。
+作业相关能力只读；提交记录工具只下载你自己已提交的附件，不开放提交、评论或改分。视频导出工具只写本地文件，不自动发布或上传。
 
 ## 开发验证
 
