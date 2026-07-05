@@ -10,9 +10,9 @@ https://oc.sjtu.edu.cn
 
 第一版不模拟 jAccount 登录，不保存密码，不自动提交作业。课程、文件、作业等基础数据走 Canvas API；视频模块通过 Canvas Access Token 发起 sessionless LTI，再只读调用 SJTU 视频 API。
 
-## 参考与取舍
+## 参考、致谢与许可证
 
-本项目阅读并借鉴了 [SJTU Canvas Helper](https://github.com/Okabe-Rintarou-0/SJTU-Canvas-Helper) 的接口方向：
+本项目阅读并借鉴了学长项目 [SJTU Canvas Helper](https://github.com/Okabe-Rintarou-0/SJTU-Canvas-Helper) 的接口方向。该参考项目使用 MIT License，版权声明为 `Copyright (c) 2025 Zihong Lin`。本项目同样以 MIT License 开源，并保留对参考项目的明确链接和致谢。
 
 - Canvas 基础数据走 `/api/v1/...` 和 Bearer token。
 - 课程列表包含 `teachers` 和 `term`。
@@ -20,7 +20,7 @@ https://oc.sjtu.edu.cn
 - SJTU 视频/字幕/PPT 回放通过 Canvas 外部工具 8329 接入。当前实现优先使用 Canvas `sessionless_launch` API 发起 LTI，不需要模拟 jAccount 表单登录。
 - MCP Server 直接复用本项目的 `CanvasClient`、`CourseSyncer`、`SJTUVideoClient` 和索引模型，而不是重新写一套访问逻辑。
 
-本项目不会照搬 Tauri 桌面 App，只提供可扩展的本地 CLI 和 Python 模块。
+本项目不会照搬 Tauri 桌面 App，只提供可扩展的本地 CLI、Python 模块和 MCP stdio server。如果未来直接复制或改写参考项目中的实质代码，应继续保留其原 MIT 许可证声明。
 
 ## 安装
 
