@@ -130,6 +130,12 @@ class PPTAssetExporter:
     ) -> PPTExportResult:
         slices = self.video_client.get_video_ppt_slices(course_id, video_id)
         image_dir = (output_dir or self.default_output_dir(course_id, video_id)).expanduser()
+        if not slices:
+            return PPTExportResult(
+                course_id=course_id, video_id=video_id, image_dir=image_dir,
+                relative_image_dir=_relative_to_root(image_dir, self.data_dir),
+                availability="unavailable", pdf_status="unavailable" if make_pdf else "",
+            )
         image_dir.mkdir(parents=True, exist_ok=True)
         resolved_pdf_path = (pdf_path.expanduser() if pdf_path else self.default_pdf_path(image_dir)) if make_pdf else None
 

@@ -366,6 +366,7 @@ def _render_videos(videos: list[CanvasVideo]) -> None:
     table.add_column("Classroom")
     table.add_column("Begin")
     table.add_column("End")
+    table.add_column("Playback")
     for video in videos:
         table.add_row(
             video.video_id,
@@ -374,6 +375,7 @@ def _render_videos(videos: list[CanvasVideo]) -> None:
             video.classroom_name,
             video.course_begin_time,
             video.course_end_time,
+            {True: "playable", False: "disabled", None: "unknown"}[video.playable],
         )
     console.print(table)
 
@@ -390,7 +392,7 @@ def _render_video_info(info: VideoInfo) -> None:
         ("classroom", info.classroom_name),
         ("begin", info.course_begin_time),
         ("end", info.course_end_time),
-        ("video_course_id", info.cour_id),
+        ("teaching_class_id", (info.model_extra or {}).get("teclId", "")),
         ("play_entries", len(info.play_items)),
     ]:
         table.add_row(key, str(value or ""))
@@ -398,6 +400,9 @@ def _render_video_info(info: VideoInfo) -> None:
 
 
 def _render_subtitle_summary(body: VideoSubtitleBody, srt: str, output: Optional[Path]) -> None:
+    console.print(f"Subtitle availability: {body.availability}")
+    if not srt:
+        console.print("The platform has not provided usable AI subtitles. No SRT file was written.")
     console.print(
         f"Subtitle rows: before={len(body.before_assembly_list)}  "
         f"after={len(body.after_assembly_list)}  srt_chars={len(srt)}"
@@ -440,6 +445,9 @@ def _format_video_offset(milliseconds: int) -> str:
 
 
 def _render_ppt_slices(slices: list[VideoPPTSlice]) -> None:
+    if not slices:
+        console.print("No AI PPT slices are available. A PPT video channel is not a static slice export.")
+        return
     table = Table(title="Video PPT Slices")
     table.add_column("Offset", justify="right")
     table.add_column("OCR")
@@ -1022,20 +1030,20 @@ def video_subtitle(
         with client:
             body = client.get_video_subtitle(course_id, video_id)
         srt = subtitle_items_to_srt(body.preferred_items)
-        if output is None:
-            output = (
-                root
-                / "videos"
-                / f"course-{course_id}"
-                / f"{safe_path_segment(video_id, fallback='video')}.srt"
-            )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(srt, encoding="utf-8")
+        if srt:
+            if output is None:
+                output = root / "videos" / f"course-{course_id}" / f"{safe_path_segment(video_id, fallback='video')}.srt"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(srt, encoding="utf-8")
+        else:
+            # Missing optional AI output must not truncate an existing transcript.
+            output = None
         if json_output:
             _print_video_json(
                 {
                     "subtitle": body.model_dump(mode="json"),
-                    "srt_path": str(output),
+                    "availability": body.availability,
+                    "srt_path": str(output) if output is not None else None,
                     "srt_chars": len(srt),
                 }
             )

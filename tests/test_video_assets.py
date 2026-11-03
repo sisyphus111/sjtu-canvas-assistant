@@ -65,3 +65,20 @@ def test_images_to_pdf_uses_existing_image_files(tmp_path) -> None:
     images_to_pdf([image_path], pdf_path)
 
     assert pdf_path.read_bytes().startswith(b"%PDF")
+
+
+def test_no_ai_slices_is_unavailable_not_a_failed_or_stale_pdf(tmp_path):
+    class EmptyClient:
+        def get_video_ppt_slices(self, course_id, video_id):
+            return []
+
+    output = tmp_path / "ppt"
+    output.mkdir()
+    pdf = output / "ppt.pdf"
+    pdf.write_bytes(b"existing PDF")
+    result = PPTAssetExporter(EmptyClient(), tmp_path).export_video_ppt(42, "101", output_dir=output)
+    assert result.availability == "unavailable"
+    assert result.pdf_status == "unavailable"
+    assert result.pdf_path is None
+    assert result.images == []
+    assert pdf.read_bytes() == b"existing PDF"

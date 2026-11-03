@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 class CanvasModel(BaseModel):
@@ -275,14 +275,46 @@ class VideoAuth(CanvasModel):
 
 
 class CanvasVideo(CanvasModel):
-    video_id: str = Field(default="", alias="videoId")
-    video_name: str = Field(default="", alias="videoName")
-    user_name: str = Field(default="", alias="userName")
-    classroom_name: str = Field(default="", alias="classroomName")
-    course_begin_time: str = Field(default="", alias="courseBeginTime")
-    course_end_time: str = Field(default="", alias="courseEndTime")
+    video_id: str = Field(
+        default="", alias="videoId",
+        validation_alias=AliasChoices("videoId", "id"),
+    )
+    video_name: str = Field(
+        default="", alias="videoName",
+        validation_alias=AliasChoices("videoName", "subjName"),
+    )
+    user_name: str = Field(
+        default="", alias="userName",
+        validation_alias=AliasChoices("userName", "teacNames"),
+    )
+    classroom_name: str = Field(
+        default="", alias="classroomName",
+        validation_alias=AliasChoices("classroomName", "clroName"),
+    )
+    course_begin_time: str = Field(
+        default="", alias="courseBeginTime",
+        validation_alias=AliasChoices("courseBeginTime", "courBeginTime"),
+    )
+    course_end_time: str = Field(
+        default="", alias="courseEndTime",
+        validation_alias=AliasChoices("courseEndTime", "courEndTime"),
+    )
     canvas_course_id: str = Field(default="", alias="canvasCourseId")
     cour_id: str = Field(default="", alias="courId")
+
+    vod_status: Optional[int] = Field(default=None, alias="vodStatus")
+    vod_display_status: Optional[int] = Field(default=None, alias="vodDisplayStatus")
+    vod_click_enable: Optional[bool] = Field(default=None, alias="vodClickEnable")
+
+    @computed_field
+    @property
+    def playable(self) -> Optional[bool]:
+        """Mirror the player UI's clickability, without guessing a disabled reason."""
+        if self.vod_click_enable is False:
+            return False
+        if self.vod_display_status is None:
+            return None
+        return self.vod_display_status in {3, 5, 6}
 
     @property
     def display_name(self) -> str:
@@ -307,14 +339,33 @@ class CanvasVideo(CanvasModel):
 class VideoInfo(CanvasModel):
     id: str = ""
     cour_id: str = Field(default="", alias="courId")
-    video_id: str = Field(default="", alias="videoId")
-    video_name: str = Field(default="", alias="videoName")
-    user_name: str = Field(default="", alias="userName")
-    classroom_name: str = Field(default="", alias="classroomName")
-    course_begin_time: str = Field(default="", alias="courseBeginTime")
-    course_end_time: str = Field(default="", alias="courseEndTime")
+    video_id: str = Field(
+        default="", alias="videoId",
+        validation_alias=AliasChoices("videoId", "id"),
+    )
+    video_name: str = Field(
+        default="", alias="videoName",
+        validation_alias=AliasChoices("videoName", "courName"),
+    )
+    user_name: str = Field(
+        default="", alias="userName",
+        validation_alias=AliasChoices("userName", "tecName"),
+    )
+    classroom_name: str = Field(
+        default="", alias="classroomName",
+        validation_alias=AliasChoices("classroomName", "classRoomName"),
+    )
+    course_begin_time: str = Field(
+        default="", alias="courseBeginTime",
+        validation_alias=AliasChoices("courseBeginTime", "courBeginTime"),
+    )
+    course_end_time: str = Field(
+        default="", alias="courseEndTime",
+        validation_alias=AliasChoices("courseEndTime", "courEndTime"),
+    )
     video_play_response_vo_list: List[Dict[str, Any]] = Field(
-        default_factory=list, alias="videoPlayResponseVoList"
+        default_factory=list, alias="videoPlayResponseVoList",
+        validation_alias=AliasChoices("videoPlayResponseVoList", "courseVodViewList"),
     )
     video_play_response_vo_list_snake: List[Dict[str, Any]] = Field(
         default_factory=list, alias="video_play_response_vo_list"
@@ -347,6 +398,7 @@ class VideoSubtitleItem(CanvasModel):
 
 
 class VideoSubtitleBody(CanvasModel):
+    availability: str = "available"
     before_assembly_list: List[VideoSubtitleItem] = Field(
         default_factory=list, alias="beforeAssemblyList"
     )
@@ -382,6 +434,7 @@ class PPTImageRecord(BaseModel):
 
 
 class PPTExportResult(BaseModel):
+    availability: str = "available"
     course_id: int
     video_id: str
     image_dir: Path

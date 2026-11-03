@@ -265,46 +265,39 @@ data/课程名 [课程ID]/course_index.md
 
 ## 视频、字幕、PPT 回放
 
-当前已经接入视频读取和本地导出能力。认证流程是：
+此 fork 保留 [Aspirin0000/sjtu-canvas-assistant](https://github.com/Aspirin0000/sjtu-canvas-assistant)
+的 MIT 许可证，适配 SJTU 的“课堂视频新版”。认证链路为：
 
-1. 使用 Canvas Access Token 调用 `/api/v1/courses/{course_id}/external_tools/sessionless_launch?id=8329&launch_type=course_navigation`。
-2. 打开 Canvas 返回的一次性 LTI launch URL。
-3. 解析 LTI/OIDC 表单并提交到 `v.sjtu.edu.cn`。
-4. 从跳转 URL 中取得 `tokenId`。
-5. 调用 `getAccessTokenByTokenId` 换取 SJTU 视频 API token 和视频系统 `courId`。
-6. 后续视频 API 请求使用临时视频 token。
+1. 使用 Canvas Access Token 调用 `external_tools/sessionless_launch?id=8329`。
+2. 在同一个 HTTP 会话中提交新版 `/jy-lti-adapter/lti/canvas/` OIDC 初始化与启动表单。
+3. 从最终跳转取得临时 `jwt_token`，调用 `/lms/launch-context` 读取 `canvasRecord.teachingClassId`。
+4. 用 `jwt-token` 请求头访问 `/jy-application-resourcemanage` 的只读接口。
 
-支持的只读功能：
+`video list` 按 `teclIds` 分页获取 `/v1/subject_vod_list_new`，同时保留平台状态，
+输出 `playable` 区分可点击、不可点击和未知；不可点击不自动等于没有录制。
+`video info` 用列表中的录播 ID 查询 `/v1/course_vod_urls_new`。
+录播 ID、教学班 ID 与流条目中的 `courId` 不可互换。
 
-- `video list`: 调用 `findVodVideoList` 列出课程视频。
-- `video info`: 调用 `getVodVideoInfos` 获取播放元数据。默认表格不会打印播放 URL；JSON/MCP 输出会递归脱敏 token/cookie/session 字段，并默认隐藏播放/下载 URL。
-- `video subtitle`: 调用 `transfer/translate/detail` 获取字幕并生成 SRT。
-- `video ppt`: 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片元数据。
+字幕通过 `/v1/course/ai/translate/{录播ID}?useOriginal=true` 获取；AI PPT 通过
+`/v1/course/ai/ppt?courseId={录播ID}` 获取。PPT 的 `docList.imageSeekTime` 为秒，
+客户端转换为既有导出格式使用的毫秒偏移。
 
-支持的本地导出功能：
+平台可以提供回放但没有 AI 素材。成功响应中的 `data:null` 属于素材不可用，
+不作为网络或认证失败；HTTP 错误、失败的业务状态和不支持的响应结构仍明确报错。
 
-- `video ppt-export`: 下载 PPT 回放切片图片，默认合成为 `ppt.pdf`。
-- 已存在的图片会默认跳过；加 `--force` 会重新下载并重新生成 PDF。
-- 加 `--no-pdf` 可以只下载图片，不合成 PDF。
+- `video subtitle` 的 JSON 包含 `availability`。没有有效字幕时不生成空 SRT，
+  不覆盖已有文件，`srt_path` 为 null。
+- `video ppt --json` 在没有 AI 切片时返回空列表；文本输出明确提示无 AI 切片。
+- `video ppt-export` 在切片不可用时返回 `availability=unavailable`，不生成 PDF，
+  也不把已有 PDF 误报成本次结果。
+- 回放中的 PPT 视频通道、AI 静态切片与 Canvas 附件 PPT 是三种不同资源。
 
-字幕来源是 SJTU 视频系统返回的数据。本工具不做本地语音识别，也不调用大模型生成字幕，只把接口返回的字幕行转换成 `.srt`。当前接口没有暴露字幕作者或生成器字段，因此不能可靠区分是平台自动转写、教师上传，还是后续修订版本。
+正常使用只配置 Canvas token。可选调试变量 `SJTU_VIDEO_TOKEN` 必须是新版 JWT，
+`SJTU_VIDEO_COURSE_ID` 为教学班 `teachingClassId`，不是 Canvas 课程 ID，也不是旧版 courId。
+旧视频平台临时 token 不再兼容，应清空这两个变量让 LTI 自动认证。
 
-暂不实现：
-
-- 视频二进制下载。
-- 任何作业提交或自动交互。
-
-根据参考项目实现，底层端点是：
-
-1. Canvas sessionless launch：`/api/v1/courses/{course_id}/external_tools/sessionless_launch`
-2. LTI 初始化：`https://v.sjtu.edu.cn/jy-application-canvas-sjtu/oidc/login_initiations`
-3. token 交换：`https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/getAccessTokenByTokenId`
-4. 调用 `findVodVideoList` 列出视频。
-5. 调用 `getVodVideoInfos` 获取播放地址。
-6. 调用 `transfer/translate/detail` 获取字幕。
-7. 调用 `vod-analysis/query-ppt-slice-es` 获取 PPT 切片元数据。
-
-这条链路不读取 jAccount 密码。命令执行期间会使用 Canvas 返回的一次性 launch URL 和临时视频 token，错误信息会去掉 query/token，避免泄露凭据。
+本工具不做本地语音识别、不下载视频本体、不调用大模型生成字幕。CLI/MCP 输出隐藏临时
+认证与播放 URL；PPT 图片的带签名 URL 在输出中脱敏，原始链接只在内存中用于下载。
 
 ## MCP 接入
 
